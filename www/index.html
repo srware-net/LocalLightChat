@@ -1,0 +1,1374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/>
+<title>LocalLightChat</title>
+<link rel="icon" type="image/png" href="assets/img/favicon.png"/>
+<link href="assets/css/app.css" rel="stylesheet"/>
+</head>
+<body><div class="app-container"><div class="sidebar">
+<div class="sidebar-header">
+<div class="logo">
+<div class="logo-icon"><img src="assets/img/logo.png" alt="LocalLightChat logo"/></div>
+<span>LocalLightChat</span>
+</div>
+</div>
+<!-- NEW: Toolbar above the chat list -->
+<div class="sidebar-toolbar">
+<button class="new-folder-btn" id="new-folder" title="New Folder"><span>+</span><span>Folder</span></button>
+<div class="dropdown-wrap new-chat-split" id="new-chat-wrap">
+  <button class="new-chat-btn" id="new-chat" title="New Chat"><span>+</span><span>New</span></button>
+  <button class="new-chat-dd-btn" id="new-chat-dd" aria-haspopup="true" aria-expanded="false" title="New from template">▼</button>
+  <div class="dropdown" id="new-chat-menu" role="menu">
+    <div class="dropdown-label">Templates</div>
+    <div id="template-menu-list"></div>
+    <div class="muted" id="template-menu-empty" style="padding:8px 10px;">No templates yet.</div>
+  </div>
+</div>
+</div>
+<div class="sidebar-search" id="sidebar-search-wrap">
+  <div class="sidebar-search-input">
+    <span class="sidebar-search-ico" aria-hidden="true">⌕</span>
+    <input id="sidebar-search" type="text" placeholder="Search chats…" autocomplete="off" spellcheck="false" />
+  </div>
+  <button class="icon-btn sidebar-search-clear hidden" id="sidebar-search-clear" title="Clear">✕</button>
+</div>
+<div class="chat-list" id="chat-list">
+<div class="muted" id="chat-list-empty" style="padding:12px 8px;">No chats yet.</div>
+</div></div>
+<!-- Mobile overlay for off-canvas sidebar -->
+<div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
+<div class="main-content">
+<div class="header">
+<div class="model-info">
+<button class="icon-btn mobile-sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false" title="Chats">☰</button>
+<button aria-expanded="false" aria-haspopup="true" class="model-dropdown" id="model-btn">Select model <span>▼</span></button>
+<!-- Slim model menu -->
+<div class="model-menu" id="model-menu" role="menu">
+  <div class="model-search">
+    <input id="model-search" type="text" placeholder="Search models…" autocomplete="off" spellcheck="false" />
+    <button class="icon-btn model-search-clear hidden" id="model-search-clear" title="Clear">✕</button>
+  </div>
+<ul class="model-list" id="model-list"></ul>
+</div>
+</div>
+<div class="header-actions">
+<div class="header-compact-actions">
+<button aria-label="Chat Controls" class="icon-btn" id="controls-open" title="Chat Controls">⎚</button>
+<div class="dropdown-wrap">
+<button aria-expanded="false" aria-haspopup="true" class="icon-btn" id="header-kebab" title="Menu">⋮</button>
+<div class="dropdown" id="header-kebab-menu" role="menu">
+<button class="dropdown-item" data-action="settings">Settings</button>
+<button class="dropdown-item" data-action="import">Import</button>
+<button class="dropdown-item" data-action="export">Export</button>
+<div class="dropdown-sep"></div>
+<button class="dropdown-item" data-action="shortcuts">PromptInjection AI Blog</button>
+<button class="dropdown-item" data-action="docs">Documentation</button>
+<button class="dropdown-item" data-action="donate">Donate</button>
+<div class="dropdown-sep"></div>
+<button class="dropdown-item" data-action="signout">Sign Out</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="chat-area">
+<div class="chat-messages" id="chat-messages">
+<div class="muted" id="chat-empty" style="padding:24px 0; text-align:center;">
+            Pick a chat on the left or start a new one.
+          </div>
+</div></div>
+<div class="input-section">
+<div class="input-container" id="input-container">
+<div class="document-panel hidden" id="document-panel" aria-live="polite">
+  <div class="document-panel-head">
+    <div class="document-title-wrap">
+      <span class="document-badge">Documents</span>
+      <select class="document-select" id="document-select" title="Active document" aria-label="Active document"></select>
+      <span class="document-title" id="document-title">Untitled</span>
+      <span class="document-version" id="document-version">v0</span>
+    </div>
+    <div class="document-actions" aria-label="Document actions">
+      <div class="document-view-toggle" role="group" aria-label="Document view mode">
+        <button class="document-view-btn active" id="document-view-preview" type="button" title="Rendered preview">Preview</button>
+        <button class="document-view-btn" id="document-view-raw" type="button" title="Raw markdown/text">Raw</button>
+      </div>
+      <button class="icon-btn sm document-copy-btn" id="document-copy" title="Copy document" aria-label="Copy document">
+        <svg class="ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M8 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button class="icon-btn sm document-download-btn" id="document-download" title="Download document" aria-label="Download document">
+        <svg class="ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M12 15V3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button class="icon-btn sm document-maximize-btn" id="document-maximize" title="Maximize document panel" aria-label="Maximize document panel" aria-pressed="false">
+        <svg class="ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M16 3h3a2 2 0 0 1 2 2v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M8 21H5a2 2 0 0 1-2-2v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M16 21h3a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button class="icon-btn sm danger document-delete-btn" id="document-delete" title="Delete document" aria-label="Delete document">
+        <svg class="ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M3 6h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+    <button class="icon-btn sm document-collapse-btn" id="document-collapse" title="Toggle document preview" aria-label="Toggle document preview">
+      <svg class="ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+  <div class="document-preview markdown-preview" id="document-preview"></div>
+</div>
+<!-- NEW: Attachment bar (chips) -->
+<div class="attachments" id="attachments"></div>
+<div class="input-wrapper">
+<!-- NEW: Attach button + menu + hidden file input -->
+<button aria-expanded="false" aria-haspopup="true" class="attach-btn" id="attach-btn" title="Add attachments">+</button>
+<!-- NEW: Web tools button (Web / Web search) -->
+<button aria-expanded="false" aria-haspopup="true" class="webtools-btn" id="webtools-btn" title="Web tools" aria-label="Web tools">
+  <svg class="ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" />
+    <path d="M2 12h20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+    <path d="M12 2c3.5 3.7 3.5 16.3 0 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+    <path d="M12 2c-3.5 3.7-3.5 16.3 0 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+  </svg>
+</button>
+<input class="visually-hidden" id="file-input" multiple="" type="file"/>
+<div aria-hidden="true" class="attach-menu" id="attach-menu" role="menu">
+<button class="attach-item" data-action="files">
+<span class="ai-icon">📎</span>
+<div class="ai-text">
+<div class="ai-title">Add files</div>
+<div class="ai-sub">PDF, Images, TXT, Docs, Sheets…</div>
+</div>
+</button>
+<div class="attach-sep"></div>
+<button class="attach-item" data-action="url">
+<span class="ai-icon">🔗</span>
+<div class="ai-text">
+<div class="ai-title">Add link</div>
+<div class="ai-sub">Web URL as a source</div>
+</div>
+</button>
+<button class="attach-item" data-action="note">
+<span class="ai-icon">📝</span>
+<div class="ai-text">
+<div class="ai-title">Add text</div>
+<div class="ai-sub">Free text as a “document”</div>
+</div>
+</button>
+
+</div>
+<!-- NEW: Web tools popover (Web can be enabled, Web search initially disabled) -->
+<div aria-hidden="true" class="webtools-menu" id="webtools-menu" role="menu">
+  <button class="webtools-item" data-action="web" type="button">
+    <span class="wt-check" aria-hidden="true"></span>
+    <div class="wt-text">
+      <div class="wt-title">Web</div>
+      <div class="wt-sub">Read web pages</div>
+    </div>
+  </button>
+  <div class="attach-sep"></div>
+  <button class="webtools-item" data-action="search" type="button">
+    <span class="wt-check" aria-hidden="true"></span>
+    <div class="wt-text">
+      <div class="wt-title">Web search</div>
+      <div class="wt-sub">Search (Serper/Custom)</div>
+    </div>
+  </button>
+  <div class="attach-sep"></div>
+  <button class="webtools-item" data-action="image" type="button">
+    <span class="wt-check" aria-hidden="true"></span>
+    <div class="wt-text">
+      <div class="wt-title">Image generation</div>
+      <div class="wt-sub">Image provider</div>
+    </div>
+  </button>
+  <div class="attach-sep"></div>
+  <button class="webtools-item" data-action="document" type="button">
+    <span class="wt-check" aria-hidden="true"></span>
+    <div class="wt-text">
+      <div class="wt-title">Document mode</div>
+      <div class="wt-sub">Create/edit an active document</div>
+    </div>
+  </button>
+</div>
+<textarea class="input-textarea" placeholder="Send a Message" rows="1"></textarea>
+<button class="voice-btn hidden" id="voice-btn" disabled="" title="Voice" aria-label="Voice">
+  <svg class="ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+    <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M19 11a7 7 0 0 1-14 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <path d="M12 18v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <path d="M8 22h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+</button>
+<button class="stop-btn" disabled="" title="Stop">■</button>
+<button class="send-btn" disabled="">↑</button>
+</div>
+</div>
+</div><div class="status-bar">
+  <span class="tok-metrics">
+    <span id="status-tokens-prompt" class="tok-chip" title="Prompt tokens (next request)">P 0</span>
+    <span id="status-tokens-completion" class="tok-chip" title="Completion tokens (last response)">C 0</span>
+    <span id="status-tokens-total" class="tok-chip" title="Total tokens (last request)">T 0</span>
+  </span>
+  <span id="status-cost">~$0.000</span>
+  <span id="status-speed">0.0s • 0 tok/s</span>
+</div></div></div><div aria-hidden="true" class="drawer" id="controls-drawer" role="dialog">
+<div class="drawer-backdrop" id="drawer-backdrop"></div>
+<div class="drawer-panel">
+<div class="drawer-header">
+<span>Chat Controls</span>
+<button aria-label="Close" class="icon-btn" id="controls-close">✕</button>
+</div>
+<div class="drawer-content">
+<details class="accordion" open="">
+<summary>System Prompt</summary>
+<textarea placeholder="Enter system prompt…" rows="6"></textarea>
+</details>
+<!-- ===== Advanced Params (inline-edit, ohne Slider) ===== -->
+<!-- ===== Advanced Params (inline-edit, no sliders) ===== -->
+<details class="accordion" open="">
+<summary>
+            Advanced Params
+            <span class="summary-actions">
+<button class="reset-all-btn" id="reset-all" type="button">Reset All</button>
+</span>
+</summary>
+<div class="params">
+<!-- ===== Core sampling ===== -->
+<div class="param-row" data-name="temperature">
+<div class="param-label">Temperature</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="temperature" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="temperature" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-temperature" inputmode="decimal" max="2" min="0" placeholder="e.g., 0.8" step="0.1" type="number"/>
+<div class="hint">Controls randomness: lower values are more focused and deterministic, higher values are more creative and varied.</div>
+</div>
+</div>
+<div class="param-row" data-name="dynatemp_range">
+<div class="param-label">Dynamic Temp Range</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="dynatemp_range" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="dynatemp_range" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-dynatemp_range" inputmode="decimal" min="0" placeholder="e.g., 0.15" step="0.01" type="number"/>
+<div class="hint">Final T in [T - range, T + range] (0 = disabled)</div>
+</div>
+</div>
+<div class="param-row" data-name="dynatemp_exponent">
+<div class="param-label">Dynamic Temp Exponent</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="dynatemp_exponent" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="dynatemp_exponent" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-dynatemp_exponent" inputmode="decimal" min="0" placeholder="e.g., 1.0" step="0.01" type="number"/>
+<div class="hint">Exponent applied to dynamic T (default 1.0)</div>
+</div>
+</div>
+<div class="param-row" data-name="top_k">
+<div class="param-label">Top-k</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="top_k" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="top_k" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-top_k" inputmode="numeric" max="200" min="0" placeholder="e.g., 40" step="1" type="number"/>
+<div class="hint">0–200 (default 40)</div>
+</div>
+</div>
+<div class="param-row" data-name="top_p">
+<div class="param-label">Top-p</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="top_p" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="top_p" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-top_p" inputmode="decimal" max="1" min="0" placeholder="e.g., 0.95" step="0.01" type="number"/>
+<div class="hint">0–1 nucleus sampling (default 0.95)</div>
+</div>
+</div>
+<div class="param-row" data-name="min_p">
+<div class="param-label">Min-p</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="min_p" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="min_p" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-min_p" inputmode="decimal" max="1" min="0" placeholder="e.g., 0.05" step="0.01" type="number"/>
+<div class="hint">Relative to most likely token (default 0.05)</div>
+</div>
+</div>
+<div class="param-row" data-name="typical_p">
+<div class="param-label">Typical-p</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="typical_p" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="typical_p" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-typical_p" inputmode="decimal" max="1" min="0" placeholder="e.g., 1.0" step="0.01" type="number"/>
+<div class="hint">1.0 = disabled (default 1.0)</div>
+</div>
+</div>
+<!-- ===== Length & context ===== -->
+<div class="param-row" data-name="n_predict">
+<div class="param-label">Max Tokens (n_predict)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="n_predict" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="n_predict" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-n_predict" inputmode="numeric" placeholder="e.g., 512; -1 = unlimited" step="1" type="number"/>
+<div class="hint">Max generated tokens (default -1 = unlimited)</div>
+</div>
+</div>
+<div class="param-row" data-name="n_keep">
+<div class="param-label">Keep Tokens (n_keep)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="n_keep" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="n_keep" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-n_keep" inputmode="numeric" placeholder="e.g., 0; -1 = keep all" step="1" type="number"/>
+<div class="hint">How much of the prompt to keep when context overflows</div>
+</div>
+</div>
+<div class="param-row" data-name="n_indent">
+<div class="param-label">Indent (n_indent)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="n_indent" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="n_indent" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-n_indent" inputmode="numeric" placeholder="e.g., 0" step="1" type="number"/>
+<div class="hint">Minimum leading spaces for code completion</div>
+</div>
+</div>
+<!-- ===== Repetition & penalties ===== -->
+<div class="param-row" data-name="repeat_penalty">
+<div class="param-label">Repeat Penalty</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="repeat_penalty" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="repeat_penalty" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-repeat_penalty" inputmode="decimal" min="0" placeholder="e.g., 1.1" step="0.01" type="number"/>
+<div class="hint">Discourage repeats (default 1.1)</div>
+</div>
+</div>
+<div class="param-row" data-name="repeat_last_n">
+<div class="param-label">Repeat Last N</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="repeat_last_n" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="repeat_last_n" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-repeat_last_n" inputmode="numeric" placeholder="e.g., 64; -1 = ctx size" step="1" type="number"/>
+<div class="hint">Window for repetition penalty (default 64)</div>
+</div>
+</div>
+<div class="param-row" data-name="presence_penalty">
+<div class="param-label">Presence Penalty</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="presence_penalty" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="presence_penalty" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-presence_penalty" inputmode="decimal" max="2" min="-2" placeholder="e.g., 0.0" step="0.1" type="number"/>
+<div class="hint">Repeat alpha presence penalty (default 0.0)</div>
+</div>
+</div>
+<div class="param-row" data-name="frequency_penalty">
+<div class="param-label">Frequency Penalty</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="frequency_penalty" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="frequency_penalty" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-frequency_penalty" inputmode="decimal" max="2" min="-2" placeholder="e.g., 0.0" step="0.1" type="number"/>
+<div class="hint">Repeat alpha frequency penalty (default 0.0)</div>
+</div>
+</div>
+<!-- DRY sampler (Don't Repeat Yourself) -->
+<div class="param-row" data-name="dry_multiplier">
+<div class="param-label">DRY Multiplier</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="dry_multiplier" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="dry_multiplier" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-dry_multiplier" inputmode="decimal" min="0" placeholder="e.g., 0.0" step="0.01" type="number"/>
+<div class="hint">0.0 = disabled</div>
+</div>
+</div>
+<div class="param-row" data-name="dry_base">
+<div class="param-label">DRY Base</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="dry_base" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="dry_base" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-dry_base" inputmode="decimal" min="0" placeholder="e.g., 1.75" step="0.01" type="number"/>
+<div class="hint">Exponential base (default 1.75)</div>
+</div>
+</div>
+<div class="param-row" data-name="dry_allowed_length">
+<div class="param-label">DRY Allowed Length</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="dry_allowed_length" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="dry_allowed_length" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-dry_allowed_length" inputmode="numeric" placeholder="e.g., 2" step="1" type="number"/>
+<div class="hint">Tokens allowed before DRY penalty skyrockets (default 2)</div>
+</div>
+</div>
+<div class="param-row" data-name="dry_penalty_last_n">
+<div class="param-label">DRY Penalty Last N</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="dry_penalty_last_n" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="dry_penalty_last_n" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-dry_penalty_last_n" inputmode="numeric" placeholder="e.g., -1" step="1" type="number"/>
+<div class="hint">0 = disabled, -1 = context size (default -1)</div>
+</div>
+</div>
+<div class="param-row" data-name="dry_sequence_breakers">
+<div class="param-label">DRY Sequence Breakers (JSON)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="dry_sequence_breakers" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="dry_sequence_breakers" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-dry_sequence_breakers" class="code-input" spellcheck="false" placeholder='e.g., ["\n",":","\"","*"]' type="text"/>
+<div class="hint">JSON array of strings</div>
+</div>
+</div>
+<!-- ===== Mirostat (optional) ===== -->
+<div class="param-row" data-name="mirostat">
+<div class="param-label">Mirostat Mode</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="mirostat" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="mirostat" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-mirostat" inputmode="numeric" max="2" min="0" placeholder="0 = off, 1, 2" step="1" type="number"/>
+<div class="hint">0=off, 1=Mirostat, 2=Mirostat 2.0</div>
+</div>
+</div>
+<div class="param-row" data-name="mirostat_tau">
+<div class="param-label">Mirostat Tau</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="mirostat_tau" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="mirostat_tau" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-mirostat_tau" inputmode="decimal" min="0" placeholder="e.g., 5.0" step="0.1" type="number"/>
+<div class="hint">Target entropy (default 5.0)</div>
+</div>
+</div>
+<div class="param-row" data-name="mirostat_eta">
+<div class="param-label">Mirostat Eta</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="mirostat_eta" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="mirostat_eta" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-mirostat_eta" inputmode="decimal" min="0" placeholder="e.g., 0.1" step="0.01" type="number"/>
+<div class="hint">Learning rate (default 0.1)</div>
+</div>
+</div>
+<!-- ===== Controls & system ===== -->
+<div class="param-row" data-name="stream">
+<div class="param-label">Stream</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="stream" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="stream" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-stream" placeholder="true or false" type="text"/>
+<div class="hint">Return tokens as they are generated</div>
+</div>
+</div>
+<div class="param-row" data-name="stop">
+<div class="param-label">Stop Sequences (JSON)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="stop" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="stop" disabled="">Reset</button></div>
+<div class="param-edit">
+<textarea id="param-stop" placeholder='e.g., ["&lt;/s&gt;","&lt;/END&gt;"]' rows="2" spellcheck="false" class="code-textarea"></textarea>
+<div class="hint">JSON array of strings</div>
+</div>
+</div>
+<div class="param-row" data-name="seed">
+<div class="param-label">Seed</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="seed" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="seed" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-seed" inputmode="numeric" placeholder="-1 = random" step="1" type="number"/>
+<div class="hint">RNG seed (default -1 = random)</div>
+</div>
+</div>
+<div class="param-row" data-name="logit_bias">
+<div class="param-label">Logit Bias (JSON)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="logit_bias" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="logit_bias" disabled="">Reset</button></div>
+<div class="param-edit">
+<textarea id="param-logit_bias" placeholder='e.g., [[15043,1.0],["Hello",-0.5]] or {"token":bias}' rows="2" spellcheck="false" class="code-textarea"></textarea>
+<div class="hint">Array or object; backend expects valid JSON</div>
+</div>
+</div>
+<div class="param-row" data-name="grammar">
+<div class="param-label">Grammar</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="grammar" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="grammar" disabled="">Reset</button></div>
+<div class="param-edit">
+<textarea id="param-grammar" placeholder="e.g., a PEG/grammar rule" rows="2"></textarea>
+<div class="hint">Grammar string (leave empty to disable)</div>
+</div>
+</div>
+<div class="param-row" data-name="json_schema">
+<div class="param-label">JSON Schema</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="json_schema" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="json_schema" disabled="">Reset</button></div>
+<div class="param-edit">
+<textarea id="param-json_schema" placeholder='e.g., {"type":"object","properties":{}}' rows="2" spellcheck="false" class="code-textarea"></textarea>
+<div class="hint">Constrains output to valid JSON</div>
+</div>
+</div>
+<div class="param-row" data-name="ignore_eos">
+<div class="param-label">Ignore EOS</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="ignore_eos" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="ignore_eos" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-ignore_eos" placeholder="true or false" type="text"/>
+<div class="hint">Ignore end-of-sequence and keep generating</div>
+</div>
+</div>
+<!-- ===== Introspection / performance ===== -->
+<div class="param-row" data-name="n_probs">
+<div class="param-label">Top-N Probs (n_probs)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="n_probs" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="n_probs" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-n_probs" inputmode="numeric" placeholder="e.g., 0 = disabled" step="1" type="number"/>
+<div class="hint">Include top-N token probabilities</div>
+</div>
+</div>
+<div class="param-row" data-name="min_keep">
+<div class="param-label">Min Keep (samplers)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="min_keep" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="min_keep" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-min_keep" inputmode="numeric" placeholder="e.g., 0" step="1" type="number"/>
+<div class="hint">Force samplers to return at least N tokens</div>
+</div>
+</div>
+<div class="param-row" data-name="t_max_predict_ms">
+<div class="param-label">Time Limit (ms)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="t_max_predict_ms" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="t_max_predict_ms" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-t_max_predict_ms" inputmode="numeric" placeholder="e.g., 0 = no limit" step="1" type="number"/>
+<div class="hint">Abort after this many ms (if newline seen)</div>
+</div>
+</div>
+<div class="param-row" data-name="samplers">
+<div class="param-label">Samplers (CSV)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="samplers" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="samplers" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-samplers" placeholder="e.g., dry,top_k,typ_p,top_p,min_p,xtc,temperature" type="text"/>
+<div class="hint">Order of samplers; leave empty for default chain</div>
+</div>
+</div>
+<!-- Optional extras kept sane -->
+<div class="param-row" data-name="cache_prompt">
+<div class="param-label">Cache Prompt</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="cache_prompt" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="cache_prompt" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-cache_prompt" placeholder="true or false" type="text"/>
+<div class="hint">Reuse KV cache when possible (default true)</div>
+</div>
+</div>
+<div class="param-row" data-name="return_tokens">
+<div class="param-label">Return Token IDs</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="return_tokens" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="return_tokens" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-return_tokens" placeholder="true or false" type="text"/>
+<div class="hint">Include raw token IDs in response</div>
+</div>
+</div>
+<div class="param-row" data-name="timings_per_token">
+<div class="param-label">Timings per Token</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="timings_per_token" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="timings_per_token" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-timings_per_token" placeholder="true or false" type="text"/>
+<div class="hint">Include speed info in each response</div>
+</div>
+</div>
+<div class="param-row" data-name="return_progress">
+<div class="param-label">Return Progress (stream)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="return_progress" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="return_progress" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-return_progress" placeholder="true or false" type="text"/>
+<div class="hint">Include prompt processing progress in stream mode</div>
+</div>
+</div>
+<div class="param-row" data-name="response_fields">
+<div class="param-label">Response Fields (JSON)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="response_fields" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="response_fields" disabled="">Reset</button></div>
+<div class="param-edit">
+<input id="param-response_fields" class="code-input" spellcheck="false" placeholder='e.g., ["content","generation_settings/n_predict"]' type="text"/>
+<div class="hint">Flatten &amp; include only these fields</div>
+</div>
+</div>
+<!-- LoRA -->
+<div class="param-row" data-name="lora">
+<div class="param-label">LoRA (JSON)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="lora" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="lora" disabled="">Reset</button></div>
+<div class="param-edit">
+<textarea id="param-lora" placeholder='e.g., [{"id":0,"scale":0.5}]' rows="2" spellcheck="false" class="code-textarea"></textarea>
+<div class="hint">Per-request LoRA adapters (JSON array)</div>
+</div>
+</div>
+
+<div class="param-row" data-name="chat_template_kwargs">
+<div class="param-label">Chat Template Kwargs (JSON)</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="chat_template_kwargs" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="chat_template_kwargs" disabled="">Reset</button></div>
+<div class="param-edit">
+<textarea id="param-chat_template_kwargs" placeholder='e.g., {"enable_thinking": false}' rows="2" spellcheck="false" class="code-textarea"></textarea>
+<div class="hint">Additional params passed to the chat template parser (must be a JSON object). Example: set <code>enable_thinking</code> to <code>false</code> for non-reasoning mode on some models.</div>
+</div>
+</div>
+
+</div>
+</details>
+</div>
+</div>
+</div><div aria-hidden="true" aria-modal="true" class="modal" id="settings-modal" role="dialog">
+<div class="modal-backdrop" id="settings-backdrop"></div>
+<div aria-labelledby="settings-title" class="modal-panel" role="document">
+<div class="modal-header">
+<span id="settings-title">Settings</span>
+<button aria-label="Close" class="icon-btn" id="settings-close">✕</button>
+</div>
+<!-- Sidebar-Layout -->
+<div class="settings-layout">
+<nav aria-orientation="vertical" class="settings-nav" role="tablist">
+<button aria-controls="tab-general" aria-selected="true" class="nav-item active" data-tab="general" role="tab">General</button>
+<button aria-controls="tab-web" aria-selected="false" class="nav-item" data-tab="web" role="tab">Web</button>
+<button aria-controls="tab-search" aria-selected="false" class="nav-item" data-tab="search" role="tab">Search</button>
+<button aria-controls="tab-image" aria-selected="false" class="nav-item" data-tab="image" role="tab">Image</button>
+<button aria-controls="tab-voice" aria-selected="false" class="nav-item" data-tab="voice" role="tab">Voice</button>
+<button aria-controls="tab-connections" aria-selected="false" class="nav-item" data-tab="connections" role="tab">Connections</button>
+<button aria-controls="tab-pricing" aria-selected="false" class="nav-item" data-tab="pricing" role="tab">Pricing</button>
+<button aria-controls="tab-users" aria-selected="false" class="nav-item" data-tab="users" role="tab">Users</button>
+<button aria-controls="tab-about" aria-selected="false" class="nav-item" data-tab="about" role="tab">About</button>
+</nav>
+<div class="settings-body">
+<!-- General -->
+<section class="tab-panel active" data-panel="general" id="tab-general" role="tabpanel">
+  <div class="about-wrap">
+    <h3>General</h3>
+    <div class="hint" id="general-superadmin-note" style="margin-top:8px; margin-bottom:14px;">Only superadmins can change these global limits.</div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-tool-max-iters">Max tool-call iterations</label>
+      <input id="setting-tool-max-iters" type="number" min="1" max="50" step="1" placeholder="10" />
+      <div class="hint" style="margin-top:8px;">
+        How many tools the model may call in a row before the server aborts. Default: 10.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Web -->
+<section class="tab-panel" data-panel="web" id="tab-web" role="tabpanel">
+  <div class="about-wrap">
+    <h3>Web</h3>
+	    <div class="hint hidden" id="web-inherit-note" style="margin-top:8px; margin-bottom:14px;">
+	      Web settings (Allow-Private + Limits) are managed globally for this user.
+	    </div>
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+  <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+    <input id="setting-web-auto-enable" type="checkbox" />
+    <span>Activate web automatically</span>
+  </label>
+  <div class="hint" style="margin-top:8px;">
+    Enables <strong>Web</strong> by default for new chats. You can turn it off per chat anytime via the Web button below.
+  </div>
+
+	    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+  <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+    <input id="setting-web-allow-private" type="checkbox" />
+    <span>Allow local/private IPs for web reading (Intranet)</span>
+  </label>
+  <div class="hint" style="margin-top:8px;">
+    On: <strong>web_read</strong> (tool) and link extraction may also fetch <code>192.168.*</code>/<code>10.*</code>/<code>localhost</code>, etc.
+    Off: private networks stay blocked.
+  </div>
+</div>
+
+<div class="form-field" style="max-width:520px; margin-bottom:14px;">
+  <label for="setting-web-fetch-max-chars">Max chars for URL extraction (fetch)</label>
+  <input id="setting-web-fetch-max-chars" type="number" min="0" step="1000" placeholder="20000" />
+  <div class="hint" style="margin-top:8px;">
+    Limit for the regular link extractor (readability.php). <strong>0</strong> = unlimited.
+  </div>
+</div>
+
+<div class="form-field" style="max-width:520px; margin-bottom:14px;">
+  <label for="setting-web-tool-max-chars">Max chars for tool-call web_read</label>
+  <input id="setting-web-tool-max-chars" type="number" min="0" step="1000" placeholder="12000" />
+  <div class="hint" style="margin-top:8px;">
+    Hard limit for tool calling (web_read). Models may stay below it, but not above it (unless this is <strong>0</strong> = unlimited).
+  </div>
+</div>
+    <div class="form-field" style="max-width:520px;">
+      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+        <input id="setting-web-prefer-attachments" type="checkbox" />
+        <span>Prefer saving web sources as attachments</span>
+      </label>
+      <div class="hint" style="margin-top:8px;">
+        On: URLs are fetched automatically on send and stored in the chat as a text source.
+        Off: URLs stay in the prompt; the model uses tool calling (web reads apply only to this answer and are not saved to the chat).
+      </div>
+</div>
+
+</section>
+<!-- Search -->
+<section class="tab-panel" data-panel="search" id="tab-search" role="tabpanel">
+  <div class="about-wrap">
+    <h3>Search</h3>
+
+    <div class="hint hidden" id="search-inherit-note" style="margin-top:8px; margin-bottom:14px;">
+      Search is managed globally for this user (shared global settings). You can only view it here.
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+        <input id="setting-websearch-auto-enable" type="checkbox" />
+        <span>Activate web search automatically</span>
+      </label>
+      <div class="hint" style="margin-top:8px;">
+        Enables <strong>Web search</strong> by default for new chats (if configured). You can turn it off per chat anytime via the Web button below.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-search-provider">Provider</label>
+      <select id="setting-search-provider">
+        <option value="serper">serper.dev (Google Search API)</option>
+        <option value="brave">Brave Search API</option>
+        <option value="searchngx">SearchNGX (Instance API)</option>
+        <option value="custom">Custom (Serper-like API)</option>
+      </select>
+      <div class="hint hidden" id="search-custom-hint" style="margin-top:8px;">
+        “Custom” expects Serper-compatible JSON and endpoints <code>/search</code> and <code>/news</code>.
+      </div>
+    </div>
+
+    <div id="search-serper-fields">
+      <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label for="setting-serper-api-key">Serper API Key</label>
+        <input id="setting-serper-api-key" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="serper.dev API key" />
+        <div class="hint" style="margin-top:8px;">
+          Stored locally (server-side SQLite). Header: <code>X-API-KEY</code>.
+        </div>
+      </div>
+    </div>
+
+    <div id="search-brave-fields" class="hidden">
+      <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label for="setting-brave-api-key">Brave API Key</label>
+        <input id="setting-brave-api-key" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="Brave Search API key" />
+        <div class="hint" style="margin-top:8px;">
+          Stored locally (server-side SQLite). Header: <code>X-Subscription-Token</code>.
+        </div>
+      </div>
+    </div>
+
+    <div id="search-custom-fields" class="hidden">
+      <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label for="setting-search-custom-url">Custom API Base/Endpoint URL</label>
+        <input id="setting-search-custom-url" type="url" placeholder="https://example.com  or  https://example.com/search/index.php" />
+        <div class="hint" style="margin-top:8px;">
+          You can either provide a base URL (then we use <code>{base}/search</code> and <code>{base}/news</code>)
+          <em>or</em> a full endpoint URL (e.g. <code>index.php</code>) that is called directly.
+        </div>
+      </div>
+
+      <div class="form-field" id="search-custom-news-wrap" style="max-width:520px; margin-bottom:14px;">
+        <label for="setting-search-custom-news-url">Custom News URL (optional)</label>
+        <input id="setting-search-custom-news-url" type="url" placeholder="https://example.com/news/index.php" />
+        <div class="hint" style="margin-top:8px;">
+          Only needed if your endpoint URL (e.g. <code>/search/index.php</code>) does not allow automatically deriving a news route.
+        </div>
+      </div>
+
+      <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+          <input id="setting-search-custom-allow-private" type="checkbox" />
+          <span>Allow local/private network endpoints (192.168/10.x)</span>
+        </label>
+        <div class="hint" style="margin-top:8px;">
+          If your custom search server runs on your LAN, you’ll need this. Default stays off (SSRF protection).
+        </div>
+      </div>
+
+      <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label for="setting-search-custom-api-key">Custom API Key (optional)</label>
+        <input id="setting-search-custom-api-key" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="optional" />
+        <div class="hint" style="margin-top:8px;">
+          If set, we send <code>X-API-KEY</code>.
+        </div>
+      </div>
+    </div>
+
+    <div id="search-searchngx-fields" class="hidden">
+      <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label for="setting-searchngx-url">SearchNGX Base URL</label>
+        <input id="setting-searchngx-url" type="url" placeholder="https://searx.example.com" />
+        <div class="hint" style="margin-top:8px;">
+          We call <code>{base}/search</code> with <code>format=json</code>.
+          Important: in your SearchNGX instance, JSON output must be enabled (<code>search</code> → <code>formats</code> → <code>json</code>), otherwise no JSON will be returned.
+        </div>
+      </div>
+
+      <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+          <input id="setting-searchngx-allow-private" type="checkbox" />
+          <span>Allow local/private network instances (192.168/10.x)</span>
+        </label>
+        <div class="hint" style="margin-top:8px;">
+          Only if your SearchNGX instance runs on your LAN. Default stays off (SSRF protection).
+        </div>
+      </div>
+
+      <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label for="setting-searchngx-api-key">Instance API Key (optional)</label>
+        <input id="setting-searchngx-api-key" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="optional" />
+        <div class="hint" style="margin-top:8px;">
+          If set, we send <code>X-API-KEY</code>.
+        </div>
+      </div>
+
+    </div>
+
+    <div class="form-grid" style="max-width:520px;">
+      <div class="form-field">
+        <label for="setting-search-gl">gl</label>
+        <input id="setting-search-gl" type="text" placeholder="de" />
+        <div class="hint">Geo (e.g. de, us)</div>
+      </div>
+      <div class="form-field">
+        <label for="setting-search-hl">hl</label>
+        <input id="setting-search-hl" type="text" placeholder="de" />
+        <div class="hint">Language (e.g. de, en)</div>
+      </div>
+      <div class="form-field">
+        <label for="setting-search-num">num</label>
+        <input id="setting-search-num" type="number" min="1" max="20" step="1" placeholder="10" />
+        <div class="hint">1–20</div>
+      </div>
+    </div>
+
+    <div class="hint" style="margin-top:10px;">
+      Tip: if you also enable “Web” in the composer, the model can fetch search results and then open links from those results and include their content.
+    </div>
+  </div>
+
+</section>
+<!-- Image -->
+<section class="tab-panel" data-panel="image" id="tab-image" role="tabpanel">
+  <div class="about-wrap">
+    <h3>Image</h3>
+        <div class="hint hidden" id="image-inherit-note" style="margin-top:8px; margin-bottom:14px;">These image settings are global (shared global settings) and can’t be changed here.</div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+        <input id="setting-image-auto-enable" type="checkbox" />
+        <span>Activate image generation automatically</span>
+      </label>
+      <div class="hint" style="margin-top:8px;">
+        Enables <strong>Image generation</strong> by default for new chats. You can turn it off per chat anytime via the 🌐 button below.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+        <input id="setting-vision-auto-attach-last-image" type="checkbox" />
+        <span>Always attach last image to messages</span>
+      </label>
+      <div class="hint" style="margin-top:8px;">
+        When enabled, LLC automatically attaches the last generated image to <em>every</em> new user message. This lets the LLM see its own generated images and keep working with them. Downside: the chat then requires a vision-capable model.
+      </div>
+    </div>
+
+  </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-image-provider">Provider</label>
+      <select id="setting-image-provider">
+        <option value="openai">OpenAI Image API</option>
+        <option value="openrouter">OpenRouter Image Models</option>
+        <option value="comfyui">ComfyUI</option>
+      </select>
+      <div class="hint" style="margin-top:8px;">
+        Choose which backend generates images. OpenAI uses <code>/v1/images/*</code>. OpenRouter uses <code>/chat/completions</code> with image output. ComfyUI uses your own server (workflow JSON).
+      </div>
+    </div>
+
+    <div id="image-openai-fields">
+<div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-image-base-url">Base URL</label>
+      <input id="setting-image-base-url" type="url" placeholder="https://api.openai.com/v1" />
+      <div class="hint" style="margin-top:8px;">
+        Standard: <code>https://api.openai.com/v1</code>.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-image-api-key">API Key</label>
+      <input id="setting-image-api-key" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="OpenAI API key" />
+      <div class="hint" style="margin-top:8px;">
+        Stored locally (server-side SQLite). Header: <code>Authorization: Bearer ...</code>
+      </div>
+    </div>
+
+    <div class="form-grid" style="max-width:520px;">
+      <div class="form-field">
+        <label for="setting-image-model">Model</label>
+        <select id="setting-image-model">
+          <option value="gpt-image-2">gpt-image-2 (latest / highest quality)</option>
+          <option value="gpt-image-1.5">gpt-image-1.5</option>
+          <option value="chatgpt-image-latest">chatgpt-image-latest</option>
+          <option value="gpt-image-1">gpt-image-1</option>
+          <option value="gpt-image-1-mini">gpt-image-1-mini (faster/cheaper)</option>
+          <option value="dall-e-3">dall-e-3</option>
+          <option value="dall-e-2">dall-e-2</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="setting-image-size">Default size</label>
+        <select id="setting-image-size">
+          <option value="auto">auto</option>
+          <option value="1024x1024">1024×1024</option>
+          <option value="1536x1024">1536×1024</option>
+          <option value="1024x1536">1024×1536</option>
+          <option value="1792x1024">1792×1024</option>
+          <option value="1024x1792">1024×1792</option>
+          <option value="512x512">512×512</option>
+          <option value="256x256">256×256</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="setting-image-quality">Default quality</label>
+        <select id="setting-image-quality">
+          <option value="auto">auto</option>
+          <option value="high">high</option>
+          <option value="medium">medium</option>
+          <option value="low">low</option>
+          <option value="hd">hd</option>
+          <option value="standard">standard</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-grid" style="max-width:520px; margin-top:14px;">
+      <div class="form-field">
+        <label for="setting-image-background">Default background</label>
+        <select id="setting-image-background">
+          <option value="auto">auto</option>
+          <option value="transparent">transparent</option>
+          <option value="opaque">opaque</option>
+        </select>
+        <div class="hint">GPT image models only</div>
+      </div>
+      <div class="form-field">
+        <label for="setting-image-output-format">Default output</label>
+        <select id="setting-image-output-format">
+          <option value="png">png</option>
+          <option value="jpeg">jpeg</option>
+          <option value="webp">webp</option>
+        </select>
+        <div class="hint">GPT image models only</div>
+      </div>
+    </div>
+
+    
+</div>
+
+<div id="image-openrouter-fields" class="hidden">
+  <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+    <label for="setting-image-openrouter-base-url">OpenRouter Base URL</label>
+    <input id="setting-image-openrouter-base-url" type="url" placeholder="https://openrouter.ai/api/v1" />
+    <div class="hint" style="margin-top:8px;">Standard: <code>https://openrouter.ai/api/v1</code>. Models are loaded from <code>/models?output_modalities=image</code>.</div>
+  </div>
+
+  <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+    <label for="setting-image-openrouter-api-key">OpenRouter API Key</label>
+    <input id="setting-image-openrouter-api-key" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="OpenRouter API key" />
+    <div class="hint" style="margin-top:8px;">Separate storage from the OpenAI image key. Header: <code>Authorization: Bearer ...</code></div>
+  </div>
+
+  <div class="form-field" style="max-width:720px; margin-bottom:14px;">
+    <label for="setting-image-openrouter-model">OpenRouter image model</label>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <select id="setting-image-openrouter-model" style="flex:1; min-width:0;">
+        <option value="google/gemini-3-pro-image-preview">google/gemini-3-pro-image-preview</option>
+      </select>
+      <button id="setting-image-openrouter-models-refresh" class="btn secondary" type="button">Refresh</button>
+    </div>
+    <div id="setting-image-openrouter-models-status" class="hint" style="margin-top:8px;">Only image-output models are shown when OpenRouter returns modality metadata.</div>
+  </div>
+</div>
+
+<div id="image-comfyui-fields" class="hidden">
+  <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+    <label for="setting-image-comfyui-url">ComfyUI server URL</label>
+    <input id="setting-image-comfyui-url" type="url" placeholder="http://192.168.0.1:8188" />
+    <div class="hint" style="margin-top:8px;">Your ComfyUI must be reachable from the server (Backend → ComfyUI). For local LAN IPs this is usually fine.</div>
+  </div>
+
+  <div class="form-field" style="max-width:720px; margin-bottom:14px;">
+    <label for="setting-image-comfyui-workflow">Workflow JSON (Template)</label>
+    <textarea id="setting-image-comfyui-workflow" rows="10" spellcheck="false" placeholder="Paste ComfyUI workflow JSON here..."></textarea>
+    <div class="hint" style="margin-top:8px;">Paste the JSON you get from ComfyUI UI → File → Export (API).</div>
+  </div>
+
+  <div class="form-field" style="max-width:720px; margin-bottom:14px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+      <label for="setting-image-comfyui-bindings" style="margin:0;">Bindings JSON</label>
+      <button class="btn btn-ghost" type="button" id="setting-image-comfyui-autodetect">Auto-detect</button>
+    </div>
+    <textarea id="setting-image-comfyui-bindings" rows="8" spellcheck="false" placeholder='[{"param":"prompt","selector":{"class_type":"CLIPTextEncode","meta_title_contains":"Positive"},"path":"inputs.text","cast":"string"}]'></textarea>
+    <div class="hint" style="margin-top:8px;">Bindings define <em>where</em> values land in your JSON. Choose Auto-detect for automatic detection.</div>
+  </div>
+
+  <div class="form-grid" style="max-width:720px;">
+    <div class="form-field">
+      <label for="setting-image-comfyui-seed">Default seed</label>
+      <input id="setting-image-comfyui-seed" type="number" placeholder="-1" />
+      <div class="hint">-1 = random</div>
+    </div>
+    <div class="form-field">
+      <label for="setting-image-comfyui-steps">Default steps</label>
+      <input id="setting-image-comfyui-steps" type="number" placeholder="20" />
+    </div>
+    <div class="form-field">
+      <label for="setting-image-comfyui-guidance">Default guidance</label>
+      <input id="setting-image-comfyui-guidance" type="number" step="0.1" placeholder="3.5" />
+    </div>
+  </div>
+
+  <div class="form-grid" style="max-width:720px; margin-top:14px;">
+    <div class="form-field">
+      <label for="setting-image-comfyui-width">Default width</label>
+      <input id="setting-image-comfyui-width" type="number" placeholder="512" />
+    </div>
+    <div class="form-field">
+      <label for="setting-image-comfyui-height">Default height</label>
+      <input id="setting-image-comfyui-height" type="number" placeholder="512" />
+    </div>
+    <div class="form-field">
+      <label for="setting-image-comfyui-batch">Default batch size</label>
+      <input id="setting-image-comfyui-batch" type="number" placeholder="1" />
+    </div>
+  </div>
+
+  <div class="form-grid" style="max-width:720px; margin-top:14px;">
+    <div class="form-field">
+      <label for="setting-image-comfyui-timeout">Max wait (seconds)</label>
+      <input id="setting-image-comfyui-timeout" type="number" placeholder="900" />
+      <div class="hint">ComfyUI may take minutes depending on queue/GPU load. This is the maximum time we wait before aborting.</div>
+    </div>
+  </div>
+
+  
+  <div class="form-field" style="max-width:720px; margin-top:14px;">
+    <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+      <input id="setting-image-comfyui-apply-defaults" type="checkbox" />
+      <span>Defaults override workflow values</span>
+    </label>
+    <div class="hint" style="margin-top:8px;">
+      Off: we leave the values from your workflow JSON as-is (except the prompt). On: we inject the default values (steps/size/guidance/seed/batch) and overwrite the workflow JSON.
+    </div>
+  </div>
+  </div>
+
+</section>
+
+
+<!-- Voice -->
+<section class="tab-panel" data-panel="voice" id="tab-voice" role="tabpanel">
+  <div class="about-wrap">
+    <h3>Voice</h3>
+
+    <div class="hint hidden" id="voice-inherit-note" style="margin-top:8px; margin-bottom:14px;">Voice is managed globally for this user (shared global settings). You can only view it here.</div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-voice-api-key">Voice API Key (OpenAI)</label>
+      <input id="setting-voice-api-key" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="sk-..." />
+      <div class="hint" style="margin-top:8px;">
+        Stored server-side in SQLite. Used only for Voice (Transcribe/Realtime) — independent of Connections.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+        <input id="setting-voice-auto-enable" type="checkbox" />
+        <span>Activate voice in every chat</span>
+      </label>
+      <div class="hint" style="margin-top:8px;">
+        On: the Voice button is shown by default in the composer.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+        <input id="setting-voice-auto-send" type="checkbox" />
+        <span>Dictation: send automatically after transcription</span>
+      </label>
+      <div class="hint" style="margin-top:8px;">
+        On: after dictation the message is sent immediately. Off: text only lands in the input field — you press Enter yourself.
+      </div>
+    </div>
+
+    <hr style="border:0; border-top:1px solid rgba(255,255,255,0.08); margin:18px 0;" />
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-voice-tts-provider">Read aloud</label>
+      <select id="setting-voice-tts-provider">
+        <option value="browser">Browser API (speechSynthesis)</option>
+        <option value="openai">OpenAI API (Text-to-Speech)</option>
+      </select>
+      <div class="hint" style="margin-top:8px;">
+        “Browser” uses your system’s built-in TTS. “OpenAI” uses the speech endpoint (requires a Voice API key).
+      </div>
+    </div>
+
+    <div id="voice-tts-openai-fields" class="hidden">
+      
+      <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label for="setting-voice-tts-model">OpenAI model</label>
+        <select id="setting-voice-tts-model">
+          <option value="gpt-4o-mini-tts">gpt-4o-mini-tts</option>
+        </select>
+        <div class="hint" style="margin-top:8px;">
+          Currently we use <code>gpt-4o-mini-tts</code> (stable).
+        </div>
+      </div>
+
+<div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label for="setting-voice-tts-voice">OpenAI voice</label>
+        <select id="setting-voice-tts-voice">
+          <option value="marin">marin (recommended)</option>
+          <option value="cedar">cedar (recommended)</option>
+          <option value="alloy">alloy</option>
+          <option value="ash">ash</option>
+          <option value="ballad">ballad</option>
+          <option value="coral">coral</option>
+          <option value="echo">echo</option>
+          <option value="fable">fable</option>
+          <option value="nova">nova</option>
+          <option value="onyx">onyx</option>
+          <option value="sage">sage</option>
+          <option value="shimmer">shimmer</option>
+          <option value="verse">verse</option>
+        </select>
+        <div class="hint" style="margin-top:8px;">
+          
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- Connections -->
+<section class="tab-panel" data-panel="connections" id="tab-connections" role="tabpanel">
+<div class="panel-header">
+<div>
+<h3>Connections</h3>
+<p class="muted">Manage OpenAI-API compatible endpoints (e.g. openrouter.ai, api.openai.com). Stored locally.</p>
+</div>
+<button class="btn btn-primary" id="conn-add-btn">+ New Connection</button>
+</div>
+<div class="empty-state hidden" id="conn-empty">
+<div class="empty-title">No connections yet</div>
+<div class="empty-sub">Create your first connection — name, base URL, and key.</div>
+</div>
+<div aria-live="polite" class="conn-list" id="conn-list"></div>
+<!-- Add/Edit Form -->
+<div class="conn-form hidden" id="conn-form">
+<input id="conn-id" name="id" type="hidden"/>
+<div class="form-grid">
+<div class="form-field">
+<label for="conn-label">Name</label>
+<input id="conn-label" name="label" placeholder="e.g. OpenAI (prod)" required="" type="text"/>
+
+<label for="conn-prefix">Prefix</label>
+<input id="conn-prefix" name="prefix" placeholder="e.g. OR, OpenAI" type="text"/>
+</div>
+<div class="form-field">
+<label for="conn-url">Base URL</label>
+<input id="conn-url" name="base_url" placeholder="https://api.openai.com/v1" required="" type="url"/>
+</div>
+<div class="form-field">
+<label for="conn-key">API Key</label>
+<input id="conn-key" class="secret-input" placeholder="sk-…" type="text" autocomplete="off" spellcheck="false"/>
+<div class="hint">Stored locally in your SQLite database (server-side).</div>
+</div>
+<div class="form-field">
+<label for="conn-headers">Additional headers (optional, JSON)</label>
+<textarea id="conn-headers" name="headers" placeholder='{"HTTP-Header-Name":"Value"}' rows="3"></textarea>
+<div class="hint">May not be needed for providers like OpenRouter.</div>
+</div>
+<div class="form-field">
+<label for="conn-notes">Notes (optional)</label>
+<textarea id="conn-notes" name="notes" placeholder="Internal description" rows="2"></textarea>
+</div>
+</div>
+<div class="form-actions">
+<button class="btn btn-ghost" id="conn-test-btn" type="button">Test</button>
+<button class="btn btn-primary" id="conn-save-btn" type="button">Save</button>
+<button class="btn btn-ghost" id="conn-cancel-btn" type="button">Cancel</button>
+</div>
+<div aria-live="polite" class="conn-test-result hidden" id="conn-test-result"></div>
+</div>
+</section>
+
+<!-- Pricing -->
+<section class="tab-panel" data-panel="pricing" id="tab-pricing" role="tabpanel">
+  <div class="about-wrap">
+    <h3>Pricing</h3>
+    <div class="hint" style="max-width:680px; margin-top:8px; margin-bottom:14px;">
+      Set token prices per <strong>Connection + Model</strong>. Unit: <strong>USD per 1M tokens</strong>.
+      If a model is not listed here, the chat won't show $ cost estimates.
+    </div>
+
+    <div id="pricing-list"></div>
+
+    <div class="form-actions" style="justify-content:flex-start; gap:10px; margin-top:12px;">
+      <button class="btn btn-primary" id="pricing-add" type="button">+ Add</button>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" data-panel="users" id="tab-users" role="tabpanel">
+  <div class="about-wrap">
+    <h3>My account</h3>
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <div class="hint" style="margin-bottom:8px;">
+        Signed in as <strong id="user-self-username">—</strong> <span class="model-badge" id="user-self-role">user</span>
+      </div>
+      <label for="user-self-email">Email</label>
+      <input id="user-self-email" type="email" placeholder="—" />
+      <div class="form-actions" style="justify-content:flex-start; margin-top:10px;">
+        <button class="btn btn-primary" id="user-self-save-email" type="button">Save email</button>
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="user-self-current-password">Current password</label>
+      <input id="user-self-current-password" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="••••••••" />
+      <label for="user-self-new-password" style="margin-top:10px;">New password</label>
+      <input id="user-self-new-password" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="min. 4 characters" />
+      <label for="user-self-new-password2" style="margin-top:10px;">New password (repeat)</label>
+      <input id="user-self-new-password2" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="…" />
+      <div class="form-actions" style="justify-content:flex-start; margin-top:10px;">
+        <button class="btn btn-primary" id="user-self-save-password" type="button">Change password</button>
+      </div>
+      <div class="hint" id="user-self-msg" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <div id="users-admin-wrap" class="about-wrap hidden" style="margin-top:18px;">
+    <div class="panel-header" style="margin:0;">
+      <div>
+        <h3>User management</h3>
+        <p class="muted">Admins can create users, grant/revoke admin rights, and change email/password.</p>
+      </div>
+      <button class="btn btn-primary" id="user-create-btn" type="button">+ New user</button>
+    </div>
+
+    <div class="empty-state hidden" id="users-empty" style="margin-top:10px;">
+      <div class="empty-title">No users</div>
+      <div class="empty-sub">Create the first user.</div>
+    </div>
+
+    <div aria-live="polite" class="conn-list" id="users-list" style="margin-top:10px;"></div>
+
+    <div class="conn-form hidden" id="user-create-form" style="margin-top:14px;">
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="user-create-username">Username</label>
+          <input id="user-create-username" type="text" placeholder="e.g. max" />
+        </div>
+        <div class="form-field">
+          <label for="user-create-email">Email (optional)</label>
+          <input id="user-create-email" type="email" placeholder="max@example.com" />
+        </div>
+        <div class="form-field">
+          <label for="user-create-password">Password</label>
+          <input id="user-create-password" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="…" />
+        </div>
+        <div class="form-field" style="justify-content:flex-end;">
+          <label style="display:flex; align-items:center; gap:10px; user-select:none; margin-top:26px;">
+            <input id="user-create-admin" type="checkbox" />
+            <span>Admin</span>
+          </label>
+        </div>
+
+        <div class="form-field" style="grid-column:1 / -1;">
+          <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+            <input id="user-create-inherit" type="checkbox" checked />
+            <span>User inherits global connections (use only, no editing / no keys)</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:10px; user-select:none; margin-top:8px;">
+            <input id="user-create-search-inherit" type="checkbox" checked />
+            <span>User inherits global search settings (provider/keys/locale)</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:10px; user-select:none; margin-top:8px;">
+            <input id="user-create-web-inherit" type="checkbox" checked />
+            <span>User inherits global web settings (Allow-Private + limits)</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:10px; user-select:none; margin-top:8px;">
+            <input id="user-create-image-inherit" type="checkbox" checked />
+            <span>User inherits global image settings (provider/keys/defaults/ComfyUI)</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:10px; user-select:none; margin-top:8px;">
+            <input id="user-create-voice-inherit" type="checkbox" checked />
+            <span>User inherits global voice settings (API key + TTS)</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:10px; user-select:none; margin-top:8px;">
+            <input id="user-create-own" type="checkbox" />
+            <span>User may create/manage their own connections</span>
+          </label>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="user-create-save" type="button">Create</button>
+        <button class="btn btn-ghost" id="user-create-cancel" type="button">Cancel</button>
+      </div>
+      <div class="hint" id="user-create-msg" style="margin-top:10px;"></div>
+    </div>
+  </div>
+</section>
+
+<!-- About -->
+<section class="tab-panel" data-panel="about" id="tab-about" role="tabpanel">
+<div class="about-wrap">
+<h3>About this project</h3>
+<p>LocalLightChat - the high performance chat frontend.</p>
+<p><strong>Project URL:</strong> <a href="https://www.locallightai.com/llc/" target="_blank" rel="noopener">https://www.locallightai.com/llc/</a></p>
+<ul class="about-list">
+<li><strong>Version:</strong> 0.5.0</li>
+<li><strong>License:</strong> Apache License 2.0</li>
+<li><strong>Third-Party Notices:</strong> <a href="https://www.locallightai.com/llc/3rdparty.txt" target="_blank" rel="noopener">Tools & Licenses</a></li>
+<li><strong>Author:</strong> <a href="https://www.srware.net/en/" target="_blank" rel="noopener">SRWare</a></li>
+</ul>
+<p class="muted">© 2026 SRWare. All rights reserved.</p>
+</div>
+</section>
+</div>
+</div>
+</div>
+</div>
+<!-- Login Modal -->
+<div id="login-modal" class="login-modal hidden" role="dialog" aria-modal="true">
+  <div class="login-card">
+    <div class="login-title">Login</div>
+    <form class="login-form" autocomplete="off">
+      <label class="login-label" for="login-identifier">Username / Email</label>
+      <input id="login-identifier" class="login-input" name="login_identifier" type="text" autocomplete="off" spellcheck="false" />
+      <label class="login-label" for="login-password">Password</label>
+      <input id="login-password" class="login-input secret-input" name="login_secret" type="text" autocomplete="off" spellcheck="false" />
+      <div class="login-error" aria-live="polite"></div>
+      <button class="btn primary login-btn" type="submit">Sign in</button>
+      <div class="login-hint">Default: <b>admin</b> / <b>admin</b></div>
+    </form>
+  </div>
+</div>
+
+<script defer="" src="assets/js/app.js" type="module"></script></body>
+</html>

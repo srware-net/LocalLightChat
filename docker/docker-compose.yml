@@ -1,0 +1,18 @@
+services:
+  locallightchat:
+    build: .
+    container_name: locallightchat
+    ports:
+      - "${LLC_HTTP_BIND:-127.0.0.1}:${LLC_HTTP_PORT:-8181}:80"
+      - "${LLC_HTTPS_BIND:-127.0.0.1}:${LLC_HTTPS_PORT:-8182}:443"
+    volumes:
+      - locallightchat_data:/var/lib/locallightchat/data
+      - locallightchat_uploads:/var/lib/locallightchat/uploads
+      - locallightchat_tmp:/var/lib/locallightchat/tmp
+      - ./certs:/etc/nginx/certs:ro
+    restart: unless-stopped
+
+volumes:
+  locallightchat_data:
+  locallightchat_uploads:
+  locallightchat_tmp:
