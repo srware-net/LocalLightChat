@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <ProjectSession>
+    <PathDelim Value="\"/>
+    <Version Value="12"/>
+    <BuildModes Active="Default"/>
+    <Units>
+      <Unit>
+        <Filename Value="patchphpconfig.lpr"/>
+        <IsPartOfProject Value="True"/>
+        <UnitName Value="PatchPHPConfig"/>
+        <IsVisibleTab Value="True"/>
+        <TopLine Value="67"/>
+        <CursorPos X="5" Y="109"/>
+        <UsageCount Value="20"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="patchphpconfig.lpi"/>
+        <EditorIndex Value="-1"/>
+        <UsageCount Value="10"/>
+        <DefaultSyntaxHighlighter Value="XML"/>
+      </Unit>
+    </Units>
+    <JumpHistory HistoryIndex="8">
+      <Position>
+        <Filename Value="patchphpconfig.lpr"/>
+        <Caret Line="53" Column="7" TopLine="32"/>
+      </Position>
+      <Position>
+        <Filename Value="patchphpconfig.lpr"/>
+        <Caret Line="7" Column="40"/>
+      </Position>
+      <Position>
+        <Filename Value="patchphpconfig.lpr"/>
+        <Caret Line="23" Column="40"/>
+      </Position>
+      <Position>
+        <Filename Value="patchphpconfig.lpr"/>
+        <Caret Line="86" Column="5" TopLine="44"/>
+      </Position>
+      <Position>
+        <Filename Value="patchphpconfig.lpr"/>
+        <Caret Line="7" Column="32"/>
+      </Position>
+      <Position>
+        <Filename Value="patchphpconfig.lpr"/>
+        <Caret Line="30" Column="62"/>
+      </Position>
+      <Position>
+        <Filename Value="patchphpconfig.lpr"/>
+        <Caret Line="7" Column="32"/>
+      </Position>
+      <Position>
+        <Filename Value="patchphpconfig.lpr"/>
+        <Caret Line="26" Column="50"/>
+      </Position>
+      <Position>
+        <Filename Value="patchphpconfig.lpr"/>
+        <Caret Line="99" Column="54" TopLine="67"/>
+      </Position>
+    </JumpHistory>
+    <RunParams>
+      <FormatVersion Value="2"/>
+      <Modes ActiveMode=""/>
+    </RunParams>
+  </ProjectSession>
+</CONFIG>

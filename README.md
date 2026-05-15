@@ -35,9 +35,9 @@ Ready-to-use portable packages:
 | Platform | Download |
 |---|---|
 | Windows x64 | [Windows x64](https://www.locallightai.com/llc/downloads/llc_windows_x64.zip) |
-| Linux x64 | [Linux x64](https://www.locallightai.com/llc/downloads/llc-linux_x64.tar.gz) |
-| Linux ARM64 | [Linux ARM64](https://www.locallightai.com/llc/downloads/llc-linux-arm64.tar.gz) |
-| macOS | [macOS](https://www.locallightai.com/llc/downloads/llc-macos.zip) |
+| Linux x64 | [Linux x64](https://www.locallightai.com/llc/downloads/llc_linux_x64.tar.gz) |
+| Linux ARM64 | [Linux ARM64](https://www.locallightai.com/llc/downloads/llc_linux_arm64.tar.gz) |
+| macOS | [macOS](https://www.locallightai.com/llc/downloads/llc_macos.zip) |
 
 Current version: **0.5**
 
@@ -58,14 +58,17 @@ Run locally:
 ```bash
 docker run -d \
   --name locallightchat \
-  -p 127.0.0.1:8080:80 \
+  -p 127.0.0.1:8181:80 \
+  -p 127.0.0.1:8182:443 \
+  -v locallightchat:/var/lib/locallightchat \
+  --restart unless-stopped \
   srwarenet/locallightchat:latest
 ```
 
 Open:
 
 ```text
-http://127.0.0.1:8080
+http://127.0.0.1:8181
 ```
 
 Stop:

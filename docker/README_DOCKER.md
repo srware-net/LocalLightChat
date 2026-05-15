@@ -1,12 +1,12 @@
 # LocalLightChat Docker
 
-Dieses Docker-Setup startet LocalLightChat in **einem Container** mit:
+This Docker setup starts LocalLightChat in **a single container** with:
 
 - nginx
 - php-fpm
-- persistenten Docker-Volumes für `data`, `uploads` und `tmp`
-- HTTP und HTTPS
-- dem mitgelieferten self-signed Zertifikat
+- persistent Docker volumes for `data`, `uploads`, and `tmp`
+- HTTP and HTTPS
+- the included self-signed certificate
 
 ## Start
 
@@ -14,27 +14,27 @@ Dieses Docker-Setup startet LocalLightChat in **einem Container** mit:
 docker compose up --build
 ```
 
-Standard-URLs:
+Default URLs:
 
 ```text
 http://127.0.0.1:8181/
 https://127.0.0.1:8182/
 ```
 
-Beim HTTPS-Aufruf meckert der Browser, weil das Zertifikat self-signed ist. Das ist erwartbar.
+When opening the HTTPS URL, the browser will complain because the certificate is self-signed. This is expected.
 
-## Konfiguration über `.env`
+## Configuration via `.env`
 
-Die Ports und Bind-Adressen werden über `LLC_*` Variablen gesetzt.
+Ports and bind addresses are set via `LLC_*` variables.
 
-Mitgeliefert sind:
+Included files:
 
 ```text
 .env
 .env.example
 ```
 
-Default ist absichtlich **nur lokal erreichbar**:
+By default, access is intentionally **local only**:
 
 ```env
 LLC_HTTP_BIND=127.0.0.1
@@ -44,16 +44,16 @@ LLC_HTTPS_BIND=127.0.0.1
 LLC_HTTPS_PORT=8182
 ```
 
-Damit geht der Zugriff nur auf derselben Maschine:
+This means access only works from the same machine:
 
 ```text
 http://127.0.0.1:8181/
 https://127.0.0.1:8182/
 ```
 
-## Zugriff aus dem LAN
+## Access from the LAN
 
-Wenn LocalLightChat im lokalen Netzwerk erreichbar sein soll, ändere `.env` z. B. so:
+If LocalLightChat should be reachable from the local network, change `.env`, for example, like this:
 
 ```env
 LLC_HTTP_BIND=0.0.0.0
@@ -63,21 +63,21 @@ LLC_HTTPS_BIND=0.0.0.0
 LLC_HTTPS_PORT=8182
 ```
 
-Danach neu starten:
+Then restart:
 
 ```bash
 docker compose down
 docker compose up --build
 ```
 
-Dann ist der Dienst über die LAN-IP des Hosts erreichbar, z. B.:
+The service will then be reachable via the host's LAN IP, for example:
 
 ```text
 http://192.168.0.2:8181/
 https://192.168.0.2:8182/
 ```
 
-Alternativ kannst du statt `0.0.0.0` direkt eine konkrete LAN-IP binden:
+Alternatively, instead of `0.0.0.0`, you can bind directly to a specific LAN IP:
 
 ```env
 LLC_HTTP_BIND=192.168.0.2
@@ -87,9 +87,9 @@ LLC_HTTPS_BIND=192.168.0.2
 LLC_HTTPS_PORT=8182
 ```
 
-## Bedeutung der Port-Syntax
+## Meaning of the Port Syntax
 
-In `docker-compose.yml` steht:
+In `docker-compose.yml`:
 
 ```yaml
 ports:
@@ -97,49 +97,49 @@ ports:
   - "${LLC_HTTPS_BIND:-127.0.0.1}:${LLC_HTTPS_PORT:-8182}:443"
 ```
 
-Das bedeutet:
+This means:
 
 ```text
 Host-IP:Host-Port:Container-Port
 ```
 
-Beispiele:
+Examples:
 
 ```text
-127.0.0.1:8181:80   = HTTP nur lokal
-0.0.0.0:8181:80     = HTTP auf allen Interfaces, also auch LAN
-192.168.0.2:8181:80 = HTTP nur auf dieser LAN-IP
+127.0.0.1:8181:80   = HTTP local only
+0.0.0.0:8181:80     = HTTP on all interfaces, including LAN
+192.168.0.2:8181:80 = HTTP only on this LAN IP
 ```
 
-Im Container hört nginx immer auf `80` und `443`. Ob der Dienst lokal oder im LAN sichtbar ist, entscheidet das Docker-Port-Binding.
+Inside the container, nginx always listens on `80` and `443`. Whether the service is visible locally only or also on the LAN is determined by the Docker port binding.
 
-## HTTPS-Zertifikat
+## HTTPS Certificate
 
-Die mitgelieferten self-signed Dateien liegen hier:
+The included self-signed files are located here:
 
 ```text
 certs/nginx-selfsigned.crt
 certs/nginx-selfsigned.key
 ```
 
-Sie werden read-only in den Container gemountet:
+They are mounted read-only into the container:
 
 ```yaml
 - ./certs:/etc/nginx/certs:ro
 ```
 
-nginx nutzt dann:
+nginx then uses:
 
 ```text
 /etc/nginx/certs/nginx-selfsigned.crt
 /etc/nginx/certs/nginx-selfsigned.key
 ```
 
-Wenn du eigene Zertifikate verwenden willst, ersetze diese beiden Dateien oder passe `docker/nginx.conf` an.
+If you want to use your own certificates, replace these two files or adjust `docker/nginx.conf`.
 
-## Persistente Daten
+## Persistent Data
 
-App-Daten liegen nicht im Webroot, sondern in Docker-Volumes:
+Application data is not stored in the webroot, but in Docker volumes:
 
 ```text
 /var/lib/locallightchat/data
@@ -156,23 +156,23 @@ volumes:
   - locallightchat_tmp:/var/lib/locallightchat/tmp
 ```
 
-`/uploads/...` wird von nginx gezielt ausgeliefert, aber die Dateien liegen physisch außerhalb von `/var/www/html`.
+`/uploads/...` is deliberately served by nginx, but the files are physically located outside `/var/www/html`.
 
-## Nützliche Checks
+## Useful Checks
 
-Laufende Container:
+Running containers:
 
 ```bash
 docker ps
 ```
 
-Ports prüfen:
+Check ports:
 
 ```bash
 docker ps --format 'table {{.Names}}\t{{.Ports}}'
 ```
 
-nginx-Konfiguration und Webroot im Container prüfen:
+Check nginx configuration and webroot inside the container:
 
 ```bash
 docker exec locallightchat sh -lc 'nginx -T | sed -n "1,260p"; echo ---; ls -la /var/www/html'
@@ -184,7 +184,7 @@ Logs:
 docker logs -f locallightchat
 ```
 
-Sauber neu bauen:
+Clean rebuild:
 
 ```bash
 docker compose down
