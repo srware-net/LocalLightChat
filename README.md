@@ -37,9 +37,8 @@ Ready-to-use portable packages:
 | Windows x64 | [Windows x64](https://www.locallightai.com/llc/downloads/llc_windows_x64.zip) |
 | Linux x64 | [Linux x64](https://www.locallightai.com/llc/downloads/llc_linux_x64.tar.gz) |
 | Linux ARM64 | [Linux ARM64](https://www.locallightai.com/llc/downloads/llc_linux_arm64.tar.gz) |
-| macOS | [macOS](https://www.locallightai.com/llc/downloads/llc_macos.zip) |
+| macOS | coming soon |
 
-Current version: **0.5**
 
 ## Docker
 
@@ -126,6 +125,7 @@ LocalLightChat/
 ├─ www/
 ├─ docker/
 ├─ packages/
+├─ converter/
 ├─ LICENSE
 └─ README.md
 ```

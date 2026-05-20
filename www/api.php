@@ -1157,7 +1157,7 @@ function llc_tools_enabled(array $j): bool {
   // Tools can be enabled independently (web read, web search, image generation).
   // If we forget to include a toggle here, the tool loop never runs and the model
   // can only answer with text.
-  return (!empty($wt['web']) || !empty($wt['search']) || !empty($wt['image']) || !empty($wt['document']));
+  return (!empty($wt['web']) || !empty($wt['search']) || !empty($wt['image']) || !empty($wt['document']) || !empty($wt['custom_tools']));
 }
 
 function llc_tools_for_request(bool $enableWebRead, bool $enableWebSearch, bool $enableImage, bool $enableDocument = false): array {
@@ -1295,6 +1295,50 @@ function llc_tools_for_request(bool $enableWebRead, bool $enableWebSearch, bool 
         'parameters' => [
           'type' => 'object',
           'properties' => new stdClass(),
+        ]
+      ]
+    ];
+    $tools[] = [
+      'type' => 'function',
+      'function' => [
+        'name' => 'document_history',
+        'description' => 'List saved versions for a workspace document without loading their full content. Use this before comparing or restoring old versions.',
+        'parameters' => [
+          'type' => 'object',
+          'properties' => [
+            'document_id' => ['type' => 'string', 'description' => 'ID of the document. Omit to use the active document.']
+          ]
+        ]
+      ]
+    ];
+    $tools[] = [
+      'type' => 'function',
+      'function' => [
+        'name' => 'document_get_version',
+        'description' => 'Fetch the content of a specific saved version of a workspace document. Use only when the user asks to inspect, compare, or restore an older version.',
+        'parameters' => [
+          'type' => 'object',
+          'properties' => [
+            'document_id' => ['type' => 'string', 'description' => 'ID of the document. Omit to use the active document.'],
+            'version' => ['type' => 'integer', 'description' => 'Version number to fetch']
+          ],
+          'required' => ['version']
+        ]
+      ]
+    ];
+    $tools[] = [
+      'type' => 'function',
+      'function' => [
+        'name' => 'document_revert',
+        'description' => 'Restore a saved old document version by creating a new latest version with the old content. This never deletes history.',
+        'parameters' => [
+          'type' => 'object',
+          'properties' => [
+            'document_id' => ['type' => 'string', 'description' => 'ID of the document. Omit to use the active document.'],
+            'version' => ['type' => 'integer', 'description' => 'Version number to restore as a new latest version'],
+            'summary' => ['type' => 'string', 'description' => 'Short human-readable summary of why this version was restored']
+          ],
+          'required' => ['version']
         ]
       ]
     ];
@@ -2959,6 +3003,169 @@ function llc_extract_tool_calls($assistantMsg): array {
   return [];
 }
 
+
+function llc_custom_tools_config(PDO $db, array $u): array {
+  $uid = (string)($u['id'] ?? '');
+  if ($uid === '') return [];
+  $raw = (string)(llc_get_setting($db, $uid, 'custom_tools_json') ?? '[]');
+  $j = json_decode($raw, true);
+  if (!is_array($j)) return [];
+  $out = [];
+  foreach ($j as $it) {
+    if (!is_array($it)) continue;
+    $name = trim((string)($it['name'] ?? ''));
+    if ($name === '' || !preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,63}$/', $name)) continue;
+    $endpoint = trim((string)($it['endpoint'] ?? $it['url'] ?? ''));
+    if ($endpoint === '') continue;
+    $method = strtoupper(trim((string)($it['method'] ?? 'POST')));
+    if (!in_array($method, ['GET','POST'], true)) $method = 'POST';
+    $params = $it['parameters'] ?? null;
+    if (!is_array($params)) {
+      $params = ['type'=>'object','properties'=>new stdClass()];
+    }
+    if (($params['type'] ?? '') !== 'object') $params['type'] = 'object';
+    if (!isset($params['properties']) || (!is_array($params['properties']) && !is_object($params['properties']))) $params['properties'] = new stdClass();
+    $out[] = [
+      'id' => trim((string)($it['id'] ?? $name)),
+      'name' => $name,
+      'title' => trim((string)($it['title'] ?? $name)),
+      'description' => trim((string)($it['description'] ?? ('Custom tool: ' . $name))),
+      'endpoint' => $endpoint,
+      'method' => $method,
+      'headers' => $it['headers'] ?? [],
+      'allow_private' => !empty($it['allow_private']),
+      'timeout_sec' => max(1, min(120, (int)($it['timeout_sec'] ?? 30))),
+      'parameters' => $params,
+      'body_template' => is_string($it['body_template'] ?? null) ? (string)$it['body_template'] : '',
+    ];
+  }
+  return $out;
+}
+
+function llc_custom_tools_openai(PDO $db, array $u, array $enabledNames): array {
+  $enabled = [];
+  foreach ($enabledNames as $x) {
+    $k = trim((string)$x);
+    if ($k !== '') $enabled[$k] = true;
+  }
+  if (!$enabled) return [];
+  $tools = [];
+  foreach (llc_custom_tools_config($db, $u) as $ct) {
+    $name = (string)$ct['name'];
+    $id = (string)($ct['id'] ?? $name);
+    if (empty($enabled[$name]) && empty($enabled[$id])) continue;
+    $tools[] = [
+      'type' => 'function',
+      'function' => [
+        'name' => $name,
+        'description' => (string)$ct['description'],
+        'parameters' => $ct['parameters'],
+      ]
+    ];
+  }
+  return $tools;
+}
+
+function llc_find_custom_tool(PDO $db, array $u, string $name): ?array {
+  foreach (llc_custom_tools_config($db, $u) as $ct) {
+    if ((string)$ct['name'] === $name) return $ct;
+  }
+  return null;
+}
+
+function llc_custom_tool_headers($raw): array {
+  if (is_array($raw)) {
+    $hdrs = [];
+    foreach ($raw as $k=>$v) {
+      if (is_string($k) && (is_string($v) || is_numeric($v))) $hdrs[] = $k . ': ' . (string)$v;
+      elseif (is_string($v) && str_contains($v, ':')) $hdrs[] = $v;
+    }
+    return $hdrs;
+  }
+  return llc_custom_headers((string)$raw);
+}
+
+function llc_apply_custom_tool_template(string $tpl, array $args): string {
+  return preg_replace_callback('/{{\s*([A-Za-z0-9_\.\-]+)\s*}}/', function($m) use ($args) {
+    $key = (string)$m[1];
+    $val = $args[$key] ?? '';
+    if (is_array($val) || is_object($val)) return json_encode($val, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE) ?: '';
+    return (string)$val;
+  }, $tpl) ?? $tpl;
+}
+
+function llc_execute_custom_tool(PDO $db, array $u, string $name, array $args): array {
+  $ct = llc_find_custom_tool($db, $u, $name);
+  if (!$ct) throw new RuntimeException('unknown custom tool: ' . $name);
+  $endpoint = (string)$ct['endpoint'];
+  llc_validate_public_http_url($endpoint, 'custom_tool ' . $name, !empty($ct['allow_private']));
+  $method = strtoupper((string)$ct['method']);
+  $timeout = (int)$ct['timeout_sec'];
+  $hdrs = llc_custom_tool_headers($ct['headers'] ?? []);
+  $hasContentType = false;
+  foreach ($hdrs as $h) if (stripos($h, 'Content-Type:') === 0) $hasContentType = true;
+  if ($method === 'GET') {
+    $sep = str_contains($endpoint, '?') ? '&' : '?';
+    $url = $endpoint . ($args ? $sep . http_build_query($args) : '');
+    return llc_http_get_json($url, $hdrs, $timeout, min(10, $timeout));
+  }
+  if (!$hasContentType) $hdrs[] = 'Content-Type: application/json';
+  $tpl = (string)($ct['body_template'] ?? '');
+  if (trim($tpl) !== '') {
+    $body = llc_apply_custom_tool_template($tpl, $args);
+    $decoded = json_decode($body, true);
+    $payload = is_array($decoded) ? $decoded : ['body' => $body, 'arguments' => $args];
+  } else {
+    $payload = ['arguments' => $args];
+  }
+  return llc_http_post_json($endpoint, $hdrs, $payload, $timeout, min(10, $timeout));
+}
+
+function llc_document_state_normalize(?array &$documentState): void {
+  if (!is_array($documentState)) $documentState = [];
+  if (!isset($documentState['documents']) || !is_array($documentState['documents'])) $documentState['documents'] = [];
+  if (empty($documentState['documents']) && isset($documentState['active']) && is_array($documentState['active'])) {
+    $a = $documentState['active'];
+    $aid = (string)($a['id'] ?? ('doc_' . bin2hex(random_bytes(6))));
+    $a['id'] = $aid;
+    $documentState['documents'][$aid] = $a;
+    $documentState['active_id'] = (string)($documentState['active_id'] ?? $documentState['activeId'] ?? $aid);
+    $documentState['activeId'] = (string)$documentState['active_id'];
+    unset($documentState['active']);
+  }
+}
+
+function llc_document_find(?array &$documentState, string $docIdArg = ''): array {
+  llc_document_state_normalize($documentState);
+  $docs = (isset($documentState['documents']) && is_array($documentState['documents'])) ? $documentState['documents'] : [];
+  $activeId = (string)($documentState['active_id'] ?? $documentState['activeId'] ?? '');
+  $docId = trim($docIdArg) !== '' ? trim($docIdArg) : $activeId;
+  if ($docId === '' && !empty($docs)) $docId = (string)array_key_first($docs);
+  if ($docId === '' || !isset($docs[$docId]) || !is_array($docs[$docId])) throw new RuntimeException('document: unknown document_id');
+  return [$docId, $docs[$docId]];
+}
+
+function llc_document_versions(array $doc): array {
+  $map = [];
+  $add = function($v) use (&$map, $doc) {
+    if (!is_array($v)) return;
+    $ver = (int)($v['version'] ?? 0);
+    if ($ver <= 0) return;
+    $map[$ver] = [
+      'id' => (string)($v['id'] ?? $doc['id'] ?? ''),
+      'title' => (string)($v['title'] ?? $doc['title'] ?? 'Untitled document'),
+      'type' => (string)($v['type'] ?? $doc['type'] ?? 'markdown'),
+      'version' => $ver,
+      'content' => (string)($v['content'] ?? ''),
+      'updated_at' => (int)($v['updated_at'] ?? 0),
+    ];
+  };
+  if (isset($doc['history']) && is_array($doc['history'])) foreach ($doc['history'] as $h) $add($h);
+  $add($doc);
+  ksort($map, SORT_NUMERIC);
+  return array_values($map);
+}
+
 function llc_execute_tool_call(PDO $db, array $u, array $toolCall, bool $emitStatus = true, ?array &$documentState = null): array {
   $uid = (string)($u['id'] ?? '');
   $id = (string)($toolCall['id'] ?? '');
@@ -3029,6 +3236,18 @@ $sendStatus = function(string $message, string $phase = '') use ($emitStatus) {
       ];
     }
 
+    $customTool = llc_find_custom_tool($db, $u, $name);
+    if (is_array($customTool)) {
+      $sendStatus('Running custom tool… ' . $name);
+      $res = llc_execute_custom_tool($db, $u, $name, $args);
+      $sendStatus('Custom tool done', 'done');
+      return [
+        'role' => 'tool',
+        'tool_call_id' => $id,
+        'content' => json_encode(['ok'=>true, 'tool'=>$name, 'result'=>$res], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE),
+      ];
+    }
+
     if ($name === 'document_list') {
       if (!is_array($documentState)) $documentState = [];
       $docs = (isset($documentState['documents']) && is_array($documentState['documents'])) ? $documentState['documents'] : [];
@@ -3066,6 +3285,63 @@ $sendStatus = function(string $message, string $phase = '') use ($emitStatus) {
       llc_sse_send(['type'=>'document_update','document'=>$docs[$docId]]);
       $sendStatus('Document selected', 'done');
       $res = ['ok'=>true, 'document'=>$docs[$docId]];
+      return ['role'=>'tool','tool_call_id'=>$id,'content'=>json_encode($res, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE)];
+    }
+
+    if ($name === 'document_history' || $name === 'document_get_version' || $name === 'document_revert') {
+      llc_document_state_normalize($documentState);
+      [$docId, $doc] = llc_document_find($documentState, (string)($args['document_id'] ?? ''));
+      $versions = llc_document_versions($doc);
+
+      if ($name === 'document_history') {
+        $items = [];
+        foreach ($versions as $v) {
+          $items[] = [
+            'version' => (int)$v['version'],
+            'title' => (string)$v['title'],
+            'type' => (string)$v['type'],
+            'updated_at' => (int)$v['updated_at'],
+            'size' => strlen((string)$v['content']),
+            'is_current' => ((int)$v['version'] === (int)($doc['version'] ?? 0)),
+          ];
+        }
+        $res = ['ok'=>true, 'document_id'=>$docId, 'current_version'=>(int)($doc['version'] ?? 0), 'versions'=>$items];
+        return ['role'=>'tool','tool_call_id'=>$id,'content'=>json_encode($res, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE)];
+      }
+
+      $wantVer = (int)($args['version'] ?? 0);
+      if ($wantVer <= 0) throw new RuntimeException($name . ': missing version');
+      $snap = null;
+      foreach ($versions as $v) {
+        if ((int)$v['version'] === $wantVer) { $snap = $v; break; }
+      }
+      if (!$snap) throw new RuntimeException($name . ': version not found');
+
+      if ($name === 'document_get_version') {
+        $res = ['ok'=>true, 'document_id'=>$docId, 'version'=>(int)$snap['version'], 'title'=>(string)$snap['title'], 'type'=>(string)$snap['type'], 'updated_at'=>(int)$snap['updated_at'], 'content'=>(string)$snap['content']];
+        return ['role'=>'tool','tool_call_id'=>$id,'content'=>json_encode($res, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE)];
+      }
+
+      $nowMs = (int)round(microtime(true) * 1000);
+      $newVer = ((int)($doc['version'] ?? 0)) + 1;
+      $hist = array_slice($versions, -49);
+      $newDoc = [
+        'id' => $docId,
+        'title' => (string)($snap['title'] ?: ($doc['title'] ?? 'Untitled document')),
+        'type' => (string)($snap['type'] ?: ($doc['type'] ?? 'markdown')),
+        'content' => (string)$snap['content'],
+        'version' => $newVer,
+        'created_at' => (int)($doc['created_at'] ?? $nowMs),
+        'updated_at' => $nowMs,
+      ];
+      $hist[] = ['id'=>$docId, 'title'=>$newDoc['title'], 'type'=>$newDoc['type'], 'version'=>$newDoc['version'], 'content'=>$newDoc['content'], 'updated_at'=>$newDoc['updated_at']];
+      $newDoc['history'] = $hist;
+      $documentState['documents'][$docId] = $newDoc;
+      $documentState['active_id'] = $docId;
+      $documentState['activeId'] = $docId;
+      $sendStatus('Document version restored', 'done');
+      llc_sse_send(['type'=>'document_update','document'=>$newDoc]);
+      $res = ['ok'=>true, 'restored_from_version'=>$wantVer, 'document'=>$newDoc, 'summary'=>(string)($args['summary'] ?? '')];
       return ['role'=>'tool','tool_call_id'=>$id,'content'=>json_encode($res, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE)];
     }
 
@@ -3381,6 +3657,18 @@ function llc_bootstrap(): void {
   $web_prefer_attachments = llc_get_setting($db, $uid, 'web_prefer_attachments');
   if ($web_prefer_attachments === null || $web_prefer_attachments === '') $web_prefer_attachments = '1';
 
+  $media_image_inline = llc_get_setting($db, $uid, 'media_image_inline');
+  if ($media_image_inline === null || $media_image_inline === '') $media_image_inline = '1';
+
+  $media_audio_inline = llc_get_setting($db, $uid, 'media_audio_inline');
+  if ($media_audio_inline === null || $media_audio_inline === '') $media_audio_inline = '1';
+
+  $custom_tools_json = llc_get_setting($db, $uid, 'custom_tools_json') ?? '[]';
+  if (trim((string)$custom_tools_json) === '') $custom_tools_json = '[]';
+
+  $custom_tools_auto_enable = llc_get_setting($db, $uid, 'custom_tools_auto_enable');
+  if ($custom_tools_auto_enable === null || $custom_tools_auto_enable === '') $custom_tools_auto_enable = '0';
+
   // Web settings (may be inherited from shared global settings)
   $inherit_global_web = llc_inherit_global_web($db, $u) ? 1 : 0;
 
@@ -3400,6 +3688,10 @@ function llc_bootstrap(): void {
   $tool_max_iters_n = (int)$tool_max_iters;
   if ($tool_max_iters_n < 1) $tool_max_iters_n = 1;
   if ($tool_max_iters_n > 50) $tool_max_iters_n = 50;
+
+  $upload_hard_limit_mb = llc_upload_hard_limit_mb($db);
+  $media_image_inline_limit_mb = llc_media_image_inline_limit_mb($db);
+  $media_audio_inline_limit_mb = llc_media_audio_inline_limit_mb($db);
 
   // Search settings (may be inherited from shared global settings)
   $inherit_global_search = llc_inherit_global_search($db, $u) ? 1 : 0;
@@ -3563,10 +3855,18 @@ function llc_bootstrap(): void {
     'web_auto_enable'=>(int)$web_auto_enable,
     'web_search_auto_enable'=>(int)$web_search_auto_enable,
     'web_prefer_attachments'=>(int)$web_prefer_attachments,
+    'media_image_inline'=>(int)$media_image_inline,
+    'media_audio_inline'=>(int)$media_audio_inline,
     'web_allow_private'=>(int)$web_allow_private,
     'web_fetch_max_chars'=>(int)$web_fetch_max_chars,
     'web_tool_max_chars'=>(int)$web_tool_max_chars,
     'tool_max_iters'=>(int)$tool_max_iters_n,
+    'upload_hard_limit_mb'=>(int)$upload_hard_limit_mb,
+    'media_image_inline_limit_mb'=>(int)$media_image_inline_limit_mb,
+    'media_audio_inline_limit_mb'=>(int)$media_audio_inline_limit_mb,
+    'custom_tools_json'=>(string)$custom_tools_json,
+    'custom_tools_auto_enable'=>(int)$custom_tools_auto_enable,
+    'custom_tools'=>llc_custom_tools_config($db, $u),
     'search_provider'=>(string)$search_provider,
     'serper_api_key'=>(string)$serper_api_key,
     'brave_api_key'=>(string)$brave_api_key,
@@ -3754,8 +4054,11 @@ function llc_settings_save(): void {
   }
 
   // General (global) settings are superadmin-only.
-  if (array_key_exists('tool_max_iters', $j) && !llc_is_superadmin_user($u)) {
-    llc_json(['error'=>'Only superadmins can change this setting'], 403);
+  $globalGeneralKeys = ['tool_max_iters','upload_hard_limit_mb','media_image_inline_limit_mb','media_audio_inline_limit_mb'];
+  foreach ($globalGeneralKeys as $gk) {
+    if (array_key_exists($gk, $j) && !llc_is_superadmin_user($u)) {
+      llc_json(['error'=>'Only superadmins can change this setting'], 403);
+    }
   }
 
   $isSuperadmin = llc_is_superadmin_user($u);
@@ -3794,6 +4097,24 @@ function llc_settings_save(): void {
     if ($v > 50) $v = 50;
     llc_set_global_setting($db, 'tool_max_iters', (string)$v);
   }
+  if (array_key_exists('upload_hard_limit_mb', $j) && $isSuperadmin) {
+    $v = (int)($j['upload_hard_limit_mb'] ?? 25);
+    if ($v < 1) $v = 1;
+    if ($v > 1024) $v = 1024;
+    llc_set_global_setting($db, 'upload_hard_limit_mb', (string)$v);
+  }
+  if (array_key_exists('media_image_inline_limit_mb', $j) && $isSuperadmin) {
+    $v = (int)($j['media_image_inline_limit_mb'] ?? 8);
+    if ($v < 0) $v = 0;
+    if ($v > 1024) $v = 1024;
+    llc_set_global_setting($db, 'media_image_inline_limit_mb', (string)$v);
+  }
+  if (array_key_exists('media_audio_inline_limit_mb', $j) && $isSuperadmin) {
+    $v = (int)($j['media_audio_inline_limit_mb'] ?? 15);
+    if ($v < 0) $v = 0;
+    if ($v > 1024) $v = 1024;
+    llc_set_global_setting($db, 'media_audio_inline_limit_mb', (string)$v);
+  }
   if (array_key_exists('web_auto_enable', $j)) {
     $v = (int)$j['web_auto_enable'];
     llc_set_setting($db, $uid, 'web_auto_enable', (string)($v === 0 ? '0' : '1'));
@@ -3805,6 +4126,24 @@ function llc_settings_save(): void {
   if (array_key_exists('web_prefer_attachments', $j)) {
     $v = (int)$j['web_prefer_attachments'];
     llc_set_setting($db, $uid, 'web_prefer_attachments', (string)($v === 0 ? '0' : '1'));
+  }
+  if (array_key_exists('media_image_inline', $j)) {
+    $v = (int)$j['media_image_inline'];
+    llc_set_setting($db, $uid, 'media_image_inline', (string)($v === 0 ? '0' : '1'));
+  }
+  if (array_key_exists('media_audio_inline', $j)) {
+    $v = (int)$j['media_audio_inline'];
+    llc_set_setting($db, $uid, 'media_audio_inline', (string)($v === 0 ? '0' : '1'));
+  }
+  if (array_key_exists('custom_tools_auto_enable', $j)) {
+    $v = (int)$j['custom_tools_auto_enable'];
+    llc_set_setting($db, $uid, 'custom_tools_auto_enable', (string)($v === 0 ? '0' : '1'));
+  }
+  if (array_key_exists('custom_tools_json', $j)) {
+    $raw = (string)($j['custom_tools_json'] ?? '[]');
+    $tmp = json_decode($raw, true);
+    if (!is_array($tmp)) llc_json(['error'=>'Custom tools JSON is invalid'], 400);
+    llc_set_setting($db, $uid, 'custom_tools_json', json_encode($tmp, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE));
   }
   if (array_key_exists('web_allow_private', $j)) {
     $v = (int)$j['web_allow_private'];
@@ -6416,6 +6755,32 @@ function llc_conn_test(): void {
 
 
 // ---------- files ----------
+
+function llc_global_int_setting(PDO $db, string $key, int $default, int $min, int $max): int {
+  $raw = llc_get_global_setting($db, $key);
+  if ($raw === null || $raw === '') $v = $default;
+  else $v = (int)$raw;
+  if ($v < $min) $v = $min;
+  if ($v > $max) $v = $max;
+  return $v;
+}
+
+function llc_upload_hard_limit_mb(PDO $db): int {
+  return llc_global_int_setting($db, 'upload_hard_limit_mb', 25, 1, 1024);
+}
+
+function llc_upload_hard_limit_bytes(PDO $db): int {
+  return llc_upload_hard_limit_mb($db) * 1024 * 1024;
+}
+
+function llc_media_image_inline_limit_mb(PDO $db): int {
+  return llc_global_int_setting($db, 'media_image_inline_limit_mb', 8, 0, 1024);
+}
+
+function llc_media_audio_inline_limit_mb(PDO $db): int {
+  return llc_global_int_setting($db, 'media_audio_inline_limit_mb', 15, 0, 1024);
+}
+
 function llc_file_upload(): void {
   $db = llc_db();
   $u = llc_require_user($db);
@@ -6429,7 +6794,8 @@ function llc_file_upload(): void {
   $orig = (string)$f['name'];
   $size = (int)$f['size'];
   $tmp = (string)$f['tmp_name'];
-  if ($size > 25*1024*1024) llc_json(['error'=>'file too large (25MB max)'], 413);
+  $maxUploadMb = llc_upload_hard_limit_mb($db);
+  if ($size > ($maxUploadMb * 1024 * 1024)) llc_json(['error'=>'file too large (' . $maxUploadMb . 'MB max)'], 413);
 
   $mime = mime_content_type($tmp) ?: 'application/octet-stream';
   $ext = preg_replace('/[^a-zA-Z0-9]/','', pathinfo($orig, PATHINFO_EXTENSION));
@@ -6761,8 +7127,8 @@ function llc_try_data_url_from_attachment(array $a): string {
   if (!is_file($file)) return '';
   $sz = @filesize($file);
   if (!is_int($sz) || $sz <= 0) return '';
-  // Avoid blowing up token/latency; keep it reasonable.
-  if ($sz > 10 * 1024 * 1024) return '';
+  // Uploaded images are capped by the configured hard limit; allow stored-only images to be re-encoded on demand.
+  if ($sz > llc_upload_hard_limit_bytes(llc_db())) return '';
   $bin = @file_get_contents($file);
   if (!is_string($bin) || $bin === '') return '';
   $mime = '';
@@ -6805,6 +7171,30 @@ function llc_audio_base64_from_data_url(string $dataUrl): string {
     return preg_replace('/\s+/', '', (string)$m[1]);
   }
   return '';
+}
+
+function llc_try_audio_data_url_from_attachment(array $a): string {
+  if (!empty($a['data_url']) && is_string($a['data_url'])) return (string)$a['data_url'];
+  $u = (!empty($a['url']) && is_string($a['url'])) ? (string)$a['url'] : '';
+  if ($u === '') return '';
+  $path = parse_url($u, PHP_URL_PATH);
+  if (!is_string($path) || $path === '') return '';
+  if (strpos($path, '/uploads/') === false) return '';
+  $fname = basename($path);
+  if ($fname === '') return '';
+  $file = llc_uploads_dir() . '/' . $fname;
+  if (!is_file($file)) return '';
+  $sz = @filesize($file);
+  if (!is_int($sz) || $sz <= 0) return '';
+  // Uploaded audio is capped by the configured hard limit; allow stored-only audio to be re-encoded on demand.
+  if ($sz > llc_upload_hard_limit_bytes(llc_db())) return '';
+  $bin = @file_get_contents($file);
+  if (!is_string($bin) || $bin === '') return '';
+  $mime = '';
+  if (!empty($a['mime']) && is_string($a['mime'])) $mime = (string)$a['mime'];
+  if ($mime === '') $mime = llc_mime_from_filename($fname);
+  if ($mime === '') $mime = 'audio/mpeg';
+  return 'data:' . $mime . ';base64,' . base64_encode($bin);
 }
 
 
@@ -6968,7 +7358,11 @@ function llc_chat_stream(): void {
         elseif ($type === 'audio') {
           $audioUrl = '';
           if (!empty($a['data_url']) && is_string($a['data_url'])) $audioUrl = (string)$a['data_url'];
-          elseif (!empty($a['url']) && is_string($a['url'])) $audioUrl = (string)$a['url'];
+          else {
+            $du = llc_try_audio_data_url_from_attachment($a);
+            if ($du !== '') $audioUrl = $du;
+            elseif (!empty($a['url']) && is_string($a['url'])) $audioUrl = (string)$a['url'];
+          }
 
           if ($audioUrl !== '') {
             $b64 = llc_audio_base64_from_data_url($audioUrl);
@@ -7079,6 +7473,9 @@ $payload = array_merge([
   // ---------- tool calling path (non-stream upstream + SSE to client) ----------
   if ($toolsEnabled) {
     $tools = llc_tools_for_request(!empty($j['webtools']['web']), !empty($j['webtools']['search']), !empty($j['webtools']['image']), !empty($j['webtools']['document']));
+    $customEnabled = (isset($j['webtools']['custom_tools']) && is_array($j['webtools']['custom_tools'])) ? $j['webtools']['custom_tools'] : [];
+    $customTools = llc_custom_tools_openai($db, $u, $customEnabled);
+    if (!empty($customTools)) $tools = array_merge($tools, $customTools);
 
     // Use JSON responses for tool-loop upstream calls.
     $hdrsJson = [];
@@ -7092,7 +7489,8 @@ $payload = array_merge([
     $hintParts = [];
     if (!empty($j['webtools']['search'])) $hintParts[] = "For finding sources, call web_search({q, type}).";
     if (!empty($j['webtools']['web'])) $hintParts[] = "For reading the content behind a link, call web_read({url}).";
-    if (!empty($j['webtools']['document'])) $hintParts[] = "In Document mode, call document_create({title,type,content}) for new documents and document_update({document_id,title,type,content,summary}) for edits. The document_update content must be the full updated document, not a diff. Use document_select({document_id}) to switch active documents.";
+    if (!empty($j['webtools']['document'])) $hintParts[] = "In Document mode, call document_create({title,type,content}) for new documents and document_update({document_id,title,type,content,summary}) for edits. The document_update content must be the full updated document, not a diff. Use document_select({document_id}) to switch active documents. Use document_history, document_get_version, and document_revert when the user wants to inspect, compare, undo, or restore old document versions.";
+    if (!empty($customTools)) $hintParts[] = "Custom tools are enabled in this chat. Use them when they directly match the user's request.";
     if (!empty($j['webtools']['image'])) {
       $imgProvider = (string)(llc_image_cfg_get($db, $u, 'image_provider') ?? 'openai');
       if ($imgProvider === 'comfyui') {

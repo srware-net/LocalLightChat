@@ -718,11 +718,11 @@ const texToMathML = (tex, display=false)=>{
     users: [],
     user: null,
     models: [],
-    ui: { model:'', connectionId:'', systemPrompt:'', webPreferAttachments:true, webAutoEnable:false, webSearchAutoEnable:false, webAllowPrivate:false, webFetchMaxChars:20000, webToolMaxChars:12000, searchProvider:'serper', serperApiKey:'', braveApiKey:'', searchCustomUrl:'', searchCustomNewsUrl:'', searchCustomAllowPrivate:false, searchCustomApiKey:'', searchNgxUrl:'', searchNgxAllowPrivate:false, searchNgxApiKey:'', searchGl:'us', searchHl:'en', searchNum:10, imageProvider:'openai', imageBaseUrl:'https://api.openai.com/v1', imageApiKey:'', imageModel:'gpt-image-2', imageOpenrouterBaseUrl:'https://openrouter.ai/api/v1', imageOpenrouterApiKey:'', imageOpenrouterModel:'google/gemini-3-pro-image-preview', imageOpenrouterModels:[], imageOpenrouterModelsBusy:false, imageAutoEnable:false, imageSize:'auto', imageQuality:'auto', imageBackground:'auto', imageOutputFormat:'png', visionAutoAttachLastImage:true, voiceApiKey:'', voiceAutoEnable:false, voiceAutoSend:true, voiceTtsProvider:'browser', voiceTtsModel:'gpt-4o-mini-tts', voiceTtsVoice:'marin', usersShowAll:false, pricing: [] },
+    ui: { model:'', connectionId:'', systemPrompt:'', webPreferAttachments:true, mediaImageInline:true, mediaAudioInline:true, uploadHardLimitMb:25, mediaImageInlineLimitMb:8, mediaAudioInlineLimitMb:15, webAutoEnable:false, webSearchAutoEnable:false, webAllowPrivate:false, webFetchMaxChars:20000, webToolMaxChars:12000, searchProvider:'serper', serperApiKey:'', braveApiKey:'', searchCustomUrl:'', searchCustomNewsUrl:'', searchCustomAllowPrivate:false, searchCustomApiKey:'', searchNgxUrl:'', searchNgxAllowPrivate:false, searchNgxApiKey:'', searchGl:'us', searchHl:'en', searchNum:10, imageProvider:'openai', imageBaseUrl:'https://api.openai.com/v1', imageApiKey:'', imageModel:'gpt-image-2', imageOpenrouterBaseUrl:'https://openrouter.ai/api/v1', imageOpenrouterApiKey:'', imageOpenrouterModel:'google/gemini-3-pro-image-preview', imageOpenrouterModels:[], imageOpenrouterModelsBusy:false, imageAutoEnable:false, imageSize:'auto', imageQuality:'auto', imageBackground:'auto', imageOutputFormat:'png', visionAutoAttachLastImage:true, voiceApiKey:'', voiceAutoEnable:false, voiceAutoSend:true, voiceTtsProvider:'browser', voiceTtsModel:'gpt-4o-mini-tts', voiceTtsVoice:'marin', usersShowAll:false, pricing: [], customTools: [], customToolsJson: '[]', customToolsAutoEnable:false },
     defaults: { systemPrompt:'' },
     loadingChat: false,
     attachments: [],
-    webtools: { web: false, search: false, image: false, document: false },
+    webtools: { web: false, search: false, image: false, document: false, custom_tools: [] },
     webFetchBusy: false,
     autoscroll: true,
     // Streaming state is per-chat. Multiple chats may stream in parallel.
@@ -802,11 +802,21 @@ const texToMathML = (tex, display=false)=>{
   const settingsBackdrop = $('#settings-backdrop');
   const settingsClose = $('#settings-close');
 const settingToolMaxIters = $('#setting-tool-max-iters');
+const settingUploadHardLimitMb = $('#setting-upload-hard-limit-mb');
+const settingMediaImageInlineLimitMb = $('#setting-media-image-inline-limit-mb');
+const settingMediaAudioInlineLimitMb = $('#setting-media-audio-inline-limit-mb');
+const settingCustomToolsJson = $('#setting-custom-tools-json');
+const settingCustomToolsAutoEnable = $('#setting-custom-tools-auto-enable');
+const settingCustomToolsSave = $('#setting-custom-tools-save');
+const settingCustomToolsFormat = $('#setting-custom-tools-format');
+const settingCustomToolsStatus = $('#setting-custom-tools-status');
 const generalSuperNote = $('#general-superadmin-note');
 const settingWebAutoEnable = $('#setting-web-auto-enable');
 const settingWebSearchAutoEnable = $('#setting-websearch-auto-enable');
 const settingWebAllowPrivate = $('#setting-web-allow-private');
 const settingWebPreferAtt = $('#setting-web-prefer-attachments');
+const settingMediaImageInline = $('#setting-media-image-inline');
+const settingMediaAudioInline = $('#setting-media-audio-inline');
 const settingWebFetchMaxChars = $('#setting-web-fetch-max-chars');
 const settingWebToolMaxChars = $('#setting-web-tool-max-chars');
 const webInheritNote = $('#web-inherit-note');
@@ -1391,11 +1401,15 @@ const userCreateMsg = $('#user-create-msg');
   // Web tools (Web / Web search)
   const webToolsBtn = $('#webtools-btn');
   const webToolsMenu = $('#webtools-menu');
+  const webToolsCustomList = $('#webtools-custom-list');
   const documentPanel = $('#document-panel');
   const documentTitleEl = $('#document-title');
   const documentVersionEl = $('#document-version');
+  const documentVersionSelectEl = $('#document-version-select');
+  const documentRestoreVersionBtn = $('#document-restore-version');
   const documentPreviewEl = $('#document-preview');
   const documentCollapseBtn = $('#document-collapse');
+  const documentRestoreBtn = $('#document-restore');
   const documentSelectEl = $('#document-select');
   const documentCopyBtn = $('#document-copy');
   const documentDownloadBtn = $('#document-download');
@@ -1894,7 +1908,9 @@ ${h}
     if (!e.target.closest('.folder-menu-btn') && !e.target.closest('.folder-dropdown')) $$('.folder-dropdown').forEach(d=>d.classList.remove('show'));
     if (!e.target.closest('#model-btn') && !e.target.closest('#model-menu')) modelMenu?.classList.remove('show');
     if (!e.target.closest('#attach-btn') && !e.target.closest('#attach-menu')) attachMenu?.classList.remove('show');
-    if (!e.target.closest('#webtools-btn') && !e.target.closest('#webtools-menu')) webToolsMenu?.classList.remove('show');
+    // Webtools menu is deliberately sticky: only the globe button toggles it.
+    // Do not close it from document-level outside clicks, because users may toggle
+    // several tools in one pass.
     if (!e.target.closest('#new-chat') && !e.target.closest('#new-chat-dd') && !e.target.closest('#new-chat-menu')) {
       newChatMenu?.classList.remove('show');
       newChatDdBtn?.setAttribute('aria-expanded', 'false');
@@ -2114,6 +2130,9 @@ ${h}
     // Pricing tab
     if (name === 'pricing') {
       renderPricingSettingsUI();
+    }
+    if (name === 'custom-tools') {
+      renderCustomToolsSettingsUI();
     }
   }
   tabBtns.forEach(b=>b.addEventListener('click', ()=>activateTab(b.dataset.tab)));
@@ -2520,6 +2539,20 @@ settingWebPreferAtt?.addEventListener('change', async ()=>{
   } catch(_){ /* ignore */ }
 });
 
+settingMediaImageInline?.addEventListener('change', async ()=>{
+  state.ui.mediaImageInline = !!settingMediaImageInline.checked;
+  try {
+    await api('settings_save', { media_image_inline: state.ui.mediaImageInline ? 1 : 0 });
+  } catch(_){ /* ignore */ }
+});
+
+settingMediaAudioInline?.addEventListener('change', async ()=>{
+  state.ui.mediaAudioInline = !!settingMediaAudioInline.checked;
+  try {
+    await api('settings_save', { media_audio_inline: state.ui.mediaAudioInline ? 1 : 0 });
+  } catch(_){ /* ignore */ }
+});
+
 const normalizeWebLimit = (val, fallback)=>{
   const n = parseInt(String(val ?? ''), 10);
   if (!Number.isFinite(n)) return fallback;
@@ -2534,22 +2567,20 @@ const normalizeToolMaxIters = (val, fallback)=>{
   return n;
 };
 
+const normalizeMbLimit = (val, fallback, min=0, max=1024)=>{
+  const n = parseInt(String(val ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < min) return min;
+  if (n > max) return max;
+  return n;
+};
+
 const renderGeneralSettingsUI = ()=>{
   const isSuper = String(state.user?.role || 'user') === 'superadmin';
-  const btn = settingsModal?.querySelector('.nav-item[data-tab="general"]');
-  const panel = settingsModal?.querySelector('.tab-panel[data-panel="general"]');
-  if (btn) btn.classList.toggle('hidden', !isSuper);
-  if (panel) panel.classList.toggle('hidden', !isSuper);
   if (generalSuperNote) generalSuperNote.classList.toggle('hidden', !isSuper);
-  try{ if (settingToolMaxIters) settingToolMaxIters.disabled = !isSuper; }catch(_){}
-
-  // If the currently active tab becomes hidden, bounce to the first visible one.
-  try{
-    if (!isSuper && panel && panel.classList.contains('active')){
-      const firstBtn = Array.from(tabBtns).find(b=>!b.classList.contains('hidden')) || tabBtns[0];
-      if (firstBtn?.dataset?.tab) activateTab(firstBtn.dataset.tab);
-    }
-  }catch(_){}
+  [settingToolMaxIters, settingUploadHardLimitMb, settingMediaImageInlineLimitMb, settingMediaAudioInlineLimitMb].forEach(el=>{
+    try{ if (el) el.disabled = !isSuper; }catch(_){}
+  });
 };
 
 settingToolMaxIters?.addEventListener('change', async ()=>{
@@ -2558,6 +2589,30 @@ settingToolMaxIters?.addEventListener('change', async ()=>{
   state.ui.toolMaxIters = normalizeToolMaxIters(settingToolMaxIters.value, 10);
   if (settingToolMaxIters) settingToolMaxIters.value = String(state.ui.toolMaxIters);
   try { await api('settings_save', { tool_max_iters: state.ui.toolMaxIters }); } catch(_){ /* ignore */ }
+});
+
+settingUploadHardLimitMb?.addEventListener('change', async ()=>{
+  const isSuper = String(state.user?.role || 'user') === 'superadmin';
+  if (!isSuper) { renderGeneralSettingsUI(); return; }
+  state.ui.uploadHardLimitMb = normalizeMbLimit(settingUploadHardLimitMb.value, 25, 1, 1024);
+  if (settingUploadHardLimitMb) settingUploadHardLimitMb.value = String(state.ui.uploadHardLimitMb);
+  try { await api('settings_save', { upload_hard_limit_mb: state.ui.uploadHardLimitMb }); } catch(_){ /* ignore */ }
+});
+
+settingMediaImageInlineLimitMb?.addEventListener('change', async ()=>{
+  const isSuper = String(state.user?.role || 'user') === 'superadmin';
+  if (!isSuper) { renderGeneralSettingsUI(); return; }
+  state.ui.mediaImageInlineLimitMb = normalizeMbLimit(settingMediaImageInlineLimitMb.value, 8, 0, 1024);
+  if (settingMediaImageInlineLimitMb) settingMediaImageInlineLimitMb.value = String(state.ui.mediaImageInlineLimitMb);
+  try { await api('settings_save', { media_image_inline_limit_mb: state.ui.mediaImageInlineLimitMb }); } catch(_){ /* ignore */ }
+});
+
+settingMediaAudioInlineLimitMb?.addEventListener('change', async ()=>{
+  const isSuper = String(state.user?.role || 'user') === 'superadmin';
+  if (!isSuper) { renderGeneralSettingsUI(); return; }
+  state.ui.mediaAudioInlineLimitMb = normalizeMbLimit(settingMediaAudioInlineLimitMb.value, 15, 0, 1024);
+  if (settingMediaAudioInlineLimitMb) settingMediaAudioInlineLimitMb.value = String(state.ui.mediaAudioInlineLimitMb);
+  try { await api('settings_save', { media_audio_inline_limit_mb: state.ui.mediaAudioInlineLimitMb }); } catch(_){ /* ignore */ }
 });
 
 const renderWebSettingsUI = ()=>{
@@ -3377,6 +3432,7 @@ settingImageAutoEnable?.addEventListener('change', async ()=>{
   if (!hasOverride) {
     state.webtools.image = !!state.ui.imageAutoEnable;
         state.webtools.document = false;
+        state.webtools.custom_tools = defaultCustomToolNames();
     renderWebTools();
   }
 });
@@ -4438,6 +4494,41 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     return (id && dm.documents && dm.documents[id] && typeof dm.documents[id] === 'object') ? dm.documents[id] : null;
   }
 
+  function documentVersionEntries(doc){
+    if (!doc || typeof doc !== 'object') return [];
+    const map = new Map();
+    const add = (v)=>{
+      if (!v || typeof v !== 'object') return;
+      const ver = Number(v.version || 0);
+      if (!Number.isFinite(ver) || ver <= 0) return;
+      map.set(ver, {
+        id: String(v.id || doc.id || ''),
+        title: String(v.title || doc.title || 'Untitled document'),
+        type: String(v.type || doc.type || 'markdown'),
+        version: ver,
+        content: String(v.content ?? ''),
+        updated_at: Number(v.updated_at || 0)
+      });
+    };
+    if (Array.isArray(doc.history)) doc.history.forEach(add);
+    add(doc);
+    return Array.from(map.values()).sort((a,b)=> Number(b.version||0) - Number(a.version||0));
+  }
+
+  function selectedDocumentVersion(doc = activeDocument()){
+    if (!doc) return 0;
+    const dm = ensureDocumentMeta();
+    const wanted = Number(dm?.viewVersions?.[doc.id] || doc.version || 0);
+    return Number.isFinite(wanted) && wanted > 0 ? wanted : Number(doc.version || 0);
+  }
+
+  function displayedDocumentSnapshot(){
+    const doc = activeDocument();
+    if (!doc) return null;
+    const ver = selectedDocumentVersion(doc);
+    return documentVersionEntries(doc).find(v => Number(v.version) === Number(ver)) || doc;
+  }
+
   function normalizeDocumentUpdate(doc, prev = null){
     const out = (doc && typeof doc === 'object') ? { ...doc } : {};
     const old = (prev && typeof prev === 'object') ? prev : {};
@@ -4451,15 +4542,25 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     out.version = Number.isFinite(newVer) && newVer > 0 ? newVer : (oldVer + 1);
     out.updated_at = Number(out.updated_at || now());
     if (!out.created_at) out.created_at = old.created_at || out.updated_at;
-    out.history = Array.isArray(old.history) ? old.history.slice(-29) : [];
-    out.history.push({
-      id: out.id,
-      title: out.title,
-      type: out.type,
-      version: out.version,
-      content: out.content,
-      updated_at: out.updated_at
-    });
+
+    const merged = new Map();
+    const addHist = (v)=>{
+      if (!v || typeof v !== 'object') return;
+      const ver = Number(v.version || 0);
+      if (!Number.isFinite(ver) || ver <= 0) return;
+      merged.set(ver, {
+        id: out.id,
+        title: String(v.title || out.title),
+        type: String(v.type || out.type),
+        version: ver,
+        content: String(v.content ?? ''),
+        updated_at: Number(v.updated_at || 0)
+      });
+    };
+    if (Array.isArray(old.history)) old.history.forEach(addHist);
+    if (Array.isArray(out.history)) out.history.forEach(addHist);
+    addHist({ id: out.id, title: out.title, type: out.type, version: out.version, content: out.content, updated_at: out.updated_at });
+    out.history = Array.from(merged.values()).sort((a,b)=>Number(a.version||0)-Number(b.version||0)).slice(-50);
     return out;
   }
 
@@ -4471,6 +4572,8 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     const next = normalizeDocumentUpdate(doc, prev);
     dm.documents[next.id] = next;
     dm.activeId = next.id;
+    dm.viewVersions = dm.viewVersions || {};
+    dm.viewVersions[next.id] = next.version;
     renderDocumentUI();
     saveChat(chat).catch(()=>{});
   }
@@ -4554,7 +4657,13 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     let inUl = false, inOl = false, para = [];
 
     const closePara = () => {
-      if (para.length) { html.push(`<p>${renderInlineMarkdownSafe(para.join(' '))}</p>`); para = []; }
+      if (para.length) {
+        // In document preview we preserve author-entered soft line breaks.
+        // This keeps poems, notes and plain-text markdown readable instead of
+        // collapsing every single newline into one long paragraph line.
+        html.push(`<p>${para.map(renderInlineMarkdownSafe).join('<br>\n')}</p>`);
+        para = [];
+      }
     };
     const closeLists = () => {
       if (inUl) { html.push('</ul>'); inUl = false; }
@@ -4637,14 +4746,31 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     documentPanel.classList.toggle('empty', !doc);
     documentPanel.classList.toggle('collapsed', !!dm?.collapsed);
     documentPanel.classList.toggle('maximized', !!dm?.maximized);
+    if (documentRestoreBtn) {
+      const showRestore = (!!on || !!doc) && !!dm?.collapsed;
+      documentRestoreBtn.classList.toggle('hidden', !showRestore);
+      documentRestoreBtn.classList.toggle('active', showRestore);
+      const label = doc ? `Open documents: ${doc.title || 'Untitled document'}` : 'Open documents';
+      documentRestoreBtn.title = label;
+      documentRestoreBtn.setAttribute('aria-label', label);
+    }
     if (documentMaximizeBtn) {
       documentMaximizeBtn.innerHTML = iconSvg(dm?.maximized ? 'minimize' : 'maximize');
       documentMaximizeBtn.title = dm?.maximized ? 'Restore document panel' : 'Maximize document panel';
       documentMaximizeBtn.setAttribute('aria-label', dm?.maximized ? 'Restore document panel' : 'Maximize document panel');
       documentMaximizeBtn.setAttribute('aria-pressed', dm?.maximized ? 'true' : 'false');
     }
-    if (documentTitleEl) documentTitleEl.textContent = doc ? (doc.title || 'Untitled document') : 'No active document yet';
-    if (documentVersionEl) documentVersionEl.textContent = doc ? `v${Number(doc.version || 1)}` : 'v0';
+    const shownDoc = displayedDocumentSnapshot();
+    const shownVer = shownDoc ? Number(shownDoc.version || doc?.version || 1) : 0;
+    const latestVer = doc ? Number(doc.version || 1) : 0;
+    if (documentTitleEl) {
+      documentTitleEl.textContent = '';
+      documentTitleEl.classList.add('hidden');
+    }
+    if (documentVersionEl) {
+      documentVersionEl.textContent = '';
+      documentVersionEl.classList.add('hidden');
+    }
     if (documentSelectEl) {
       const cur = dm?.activeId || '';
       documentSelectEl.innerHTML = '';
@@ -4661,11 +4787,31 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       documentSelectEl.value = cur;
       documentSelectEl.disabled = docs.length === 0;
     }
+    if (documentVersionSelectEl) {
+      documentVersionSelectEl.innerHTML = '';
+      const versions = documentVersionEntries(doc);
+      versions.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = String(v.version);
+        opt.textContent = `v${Number(v.version || 0)}${Number(v.version || 0) === latestVer ? ' · current' : ''}`;
+        documentVersionSelectEl.appendChild(opt);
+      });
+      documentVersionSelectEl.value = shownDoc ? String(shownVer) : '';
+      documentVersionSelectEl.disabled = !doc || versions.length <= 1;
+      documentVersionSelectEl.classList.toggle('hidden', !doc || versions.length <= 1);
+    }
+    if (documentRestoreVersionBtn) {
+      const canRestore = !!doc && !!shownDoc && Number(shownVer) !== Number(latestVer);
+      documentRestoreVersionBtn.disabled = !canRestore;
+      documentRestoreVersionBtn.classList.toggle('hidden', !doc || documentVersionEntries(doc).length <= 1);
+      documentRestoreVersionBtn.title = canRestore ? `Restore v${shownVer} as new version` : 'Select an older version to restore';
+    }
     if (documentCopyBtn) documentCopyBtn.disabled = !doc;
     if (documentDownloadBtn) documentDownloadBtn.disabled = !doc;
     if (documentDeleteBtn) documentDeleteBtn.disabled = !doc;
-    const markdownPreviewable = isMarkdownPreviewable(doc);
-    const htmlPreviewable = isHtmlPreviewable(doc);
+    const renderDoc = shownDoc || doc;
+    const markdownPreviewable = isMarkdownPreviewable(renderDoc);
+    const htmlPreviewable = isHtmlPreviewable(renderDoc);
     const previewable = markdownPreviewable || htmlPreviewable;
     const mode = markdownPreviewable ? String(dm?.viewMode || 'preview') : 'raw';
     if (documentViewPreviewBtn) {
@@ -4683,10 +4829,9 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       if (!doc) {
         documentPreviewEl.textContent = 'Document mode is on. Ask the model to create one or more documents, then pick the active file here.';
       } else if (mode === 'preview') {
-        documentPreviewEl.innerHTML = renderMarkdownSafe(doc.content || '');
+        documentPreviewEl.innerHTML = renderMarkdownSafe(renderDoc.content || '');
       } else {
-        const txt = String(doc.content || '');
-        documentPreviewEl.textContent = txt.length > 6000 ? txt.slice(0, 6000) + '\n…' : txt;
+        documentPreviewEl.textContent = String(renderDoc.content || '');
       }
     }
   }
@@ -4700,7 +4845,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   }
 
   async function copyActiveDocument(){
-    const doc = activeDocument();
+    const doc = displayedDocumentSnapshot();
     if (!doc) return;
     const txt = String(doc.content || '');
     try{ await navigator.clipboard.writeText(txt); }
@@ -4715,7 +4860,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   }
 
   function downloadActiveDocument(){
-    const doc = activeDocument();
+    const doc = displayedDocumentSnapshot();
     if (!doc) return;
     const content = String(doc.content || '');
     const filename = safeDocumentFilename(doc);
@@ -4729,6 +4874,42 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     a.click();
     a.remove();
     setTimeout(()=>{ try{ URL.revokeObjectURL(url); }catch(_){} }, 1500);
+  }
+
+  function restoreSelectedDocumentVersion(){
+    const dm = ensureDocumentMeta();
+    const doc = activeDocument();
+    const snap = displayedDocumentSnapshot();
+    if (!dm || !doc || !snap) return;
+    const latestVer = Number(doc.version || 1);
+    const restoreVer = Number(snap.version || latestVer);
+    if (restoreVer === latestVer) return;
+    const ok = confirm(`Restore “${doc.title || 'Untitled document'}” v${restoreVer} as a new version?`);
+    if (!ok) return;
+    const nowMs = now();
+    const hist = documentVersionEntries(doc).sort((a,b)=>Number(a.version||0)-Number(b.version||0));
+    const next = {
+      ...doc,
+      title: snap.title || doc.title,
+      type: snap.type || doc.type,
+      content: String(snap.content || ''),
+      version: latestVer + 1,
+      updated_at: nowMs,
+      history: hist.slice(-49)
+    };
+    next.history.push({
+      id: next.id,
+      title: next.title,
+      type: next.type,
+      version: next.version,
+      content: next.content,
+      updated_at: next.updated_at
+    });
+    dm.documents[next.id] = next;
+    dm.viewVersions = dm.viewVersions || {};
+    dm.viewVersions[next.id] = next.version;
+    renderDocumentUI();
+    saveChat(state.currentChat).catch(()=>{});
   }
 
   function deleteActiveDocument(){
@@ -4750,6 +4931,15 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     const dm = ensureDocumentMeta();
     if (!dm) return;
     dm.collapsed = !dm.collapsed;
+    renderDocumentUI();
+    saveChat(state.currentChat).catch(()=>{});
+  });
+
+  documentRestoreBtn?.addEventListener('click', (e)=>{
+    e.preventDefault(); e.stopPropagation();
+    const dm = ensureDocumentMeta();
+    if (!dm) return;
+    dm.collapsed = false;
     renderDocumentUI();
     saveChat(state.currentChat).catch(()=>{});
   });
@@ -4780,21 +4970,41 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     if (id && dm.documents && dm.documents[id]) {
       dm.activeId = id;
       dm.active_id = id;
+      dm.viewVersions = dm.viewVersions || {};
+      delete dm.viewVersions[id];
       renderDocumentUI();
       saveChat(state.currentChat).catch(()=>{});
     }
+  });
+
+  documentVersionSelectEl?.addEventListener('change', ()=>{
+    const dm = ensureDocumentMeta();
+    const doc = activeDocument();
+    if (!dm || !doc) return;
+    dm.viewVersions = dm.viewVersions || {};
+    const ver = Number(documentVersionSelectEl.value || doc.version || 1);
+    if (Number.isFinite(ver) && ver > 0) dm.viewVersions[doc.id] = ver;
+    renderDocumentUI();
+    saveChat(state.currentChat).catch(()=>{});
+  });
+
+  documentRestoreVersionBtn?.addEventListener('click', (e)=>{
+    e.preventDefault(); e.stopPropagation();
+    restoreSelectedDocumentVersion();
   });
 
   documentViewPreviewBtn?.addEventListener('click', (e)=>{
     e.preventDefault(); e.stopPropagation();
     const dm = ensureDocumentMeta();
     const doc = activeDocument();
-    if (!dm || !doc) return;
-    if (isHtmlPreviewable(doc)) {
-      openDocumentHtmlPreview(doc);
+    const shownDoc = displayedDocumentSnapshot();
+    const targetDoc = shownDoc || doc;
+    if (!dm || !doc || !targetDoc) return;
+    if (isHtmlPreviewable(targetDoc)) {
+      openDocumentHtmlPreview(targetDoc);
       return;
     }
-    if (!isMarkdownPreviewable(doc)) return;
+    if (!isMarkdownPreviewable(targetDoc)) return;
     dm.viewMode = 'preview';
     renderDocumentUI();
     saveChat(state.currentChat).catch(()=>{});
@@ -4824,6 +5034,54 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     deleteActiveDocument();
   });
 
+  function customToolKey(t){ return String(t?.id || t?.name || '').trim(); }
+  function customToolName(t){ return String(t?.name || t?.id || '').trim(); }
+  function customToolTitle(t){ return String(t?.title || t?.name || t?.id || 'Custom tool').trim(); }
+  function defaultCustomToolNames(){
+    if (!state.ui.customToolsAutoEnable) return [];
+    const tools = Array.isArray(state.ui.customTools) ? state.ui.customTools : [];
+    return tools.map(t=>customToolName(t)).filter(Boolean);
+  }
+  function enabledCustomTools(){
+    const arr = Array.isArray(state.webtools?.custom_tools) ? state.webtools.custom_tools : [];
+    return new Set(arr.map(x=>String(x)).filter(Boolean));
+  }
+  function setEnabledCustomTools(set){
+    state.webtools.custom_tools = Array.from(set || []).filter(Boolean);
+  }
+  function renderCustomToolsSettingsUI(){
+    if (settingCustomToolsAutoEnable) settingCustomToolsAutoEnable.checked = !!state.ui.customToolsAutoEnable;
+    if (settingCustomToolsJson && settingCustomToolsJson !== document.activeElement) {
+      settingCustomToolsJson.value = String(state.ui.customToolsJson || '[]');
+    }
+    if (settingCustomToolsStatus) {
+      const n = Array.isArray(state.ui.customTools) ? state.ui.customTools.length : 0;
+      settingCustomToolsStatus.textContent = n ? `${n} custom tool${n === 1 ? '' : 's'} configured.` : 'No custom tools configured.';
+    }
+  }
+  async function saveCustomToolsFromSettings(){
+    if (!settingCustomToolsJson) return;
+    const raw = String(settingCustomToolsJson.value || '[]').trim() || '[]';
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch(ex){ if (settingCustomToolsStatus) settingCustomToolsStatus.textContent = 'Invalid JSON: ' + (ex?.message || ex); return; }
+    if (!Array.isArray(parsed)) { if (settingCustomToolsStatus) settingCustomToolsStatus.textContent = 'Top-level JSON must be an array.'; return; }
+    const pretty = JSON.stringify(parsed, null, 2);
+    try{
+      await api('settings_save', { custom_tools_json: pretty });
+      state.ui.customToolsJson = pretty;
+      state.ui.customTools = parsed.filter(x=>x && typeof x === 'object' && String(x.name || '').trim());
+      if (settingCustomToolsJson) settingCustomToolsJson.value = pretty;
+      if (settingCustomToolsStatus) settingCustomToolsStatus.textContent = `Saved ${state.ui.customTools.length} custom tool${state.ui.customTools.length === 1 ? '' : 's'}.`;
+      const hasOverride = !!(state.currentChat?.meta && state.currentChat.meta.webtools);
+      if (!hasOverride) state.webtools.custom_tools = defaultCustomToolNames();
+      renderCustomToolsSettingsUI();
+      renderWebTools();
+    }catch(ex){
+      if (settingCustomToolsStatus) settingCustomToolsStatus.textContent = ex?.message || 'Could not save custom tools.';
+    }
+  }
+
   // ---------- Web tools UI ----------
   function renderWebTools(){
   if (!webToolsBtn || !webToolsMenu) return;
@@ -4832,12 +5090,14 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   const searchOn = !!state.webtools?.search;
   const imageOn = !!state.webtools?.image;
   const documentOn = !!state.webtools?.document;
+  const customSet = enabledCustomTools();
+  const customOn = customSet.size > 0;
 
   const prov = String(state.ui.searchProvider || 'serper');
   const searchConfigured = isSearchConfigured();
   const imageConfigured = isImageConfigured();
 
-  webToolsBtn.classList.toggle('active', webOn || searchOn || imageOn || documentOn);
+  webToolsBtn.classList.toggle('active', webOn || searchOn || imageOn || documentOn || customOn);
   webToolsBtn.classList.toggle('document-active', documentOn);
 
   const webItem = webToolsMenu.querySelector('.webtools-item[data-action="web"]');
@@ -4888,6 +5148,39 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       ? (doc ? `Editing ${doc.title || 'document'} · ${documentList().length} doc${documentList().length === 1 ? '' : 's'}` : 'Document mode is active')
       : 'Create/edit multiple documents';
   }
+  const customToggle = webToolsMenu.querySelector('.webtools-item[data-action="custom-tools-toggle"]');
+  const customTools = Array.isArray(state.ui.customTools) ? state.ui.customTools : [];
+  const customPanelOpen = !!(webToolsCustomList && !webToolsCustomList.classList.contains('hidden'));
+  if (customToggle) {
+    customToggle.classList.toggle('active', customOn);
+    customToggle.setAttribute('aria-expanded', customPanelOpen ? 'true' : 'false');
+    const sub = customToggle.querySelector('.wt-sub');
+    if (sub) sub.textContent = customTools.length ? `${customSet.size}/${customTools.length} active` : 'Configure in Settings → Custom Tools';
+  }
+  if (webToolsCustomList) {
+    webToolsCustomList.innerHTML = '';
+    if (!customTools.length) {
+      const empty = document.createElement('div');
+      empty.className = 'webtools-custom-empty';
+      empty.textContent = 'No custom tools yet.';
+      webToolsCustomList.appendChild(empty);
+    } else {
+      for (const t of customTools) {
+        const key = customToolKey(t);
+        const name = customToolName(t);
+        if (!key || !name) continue;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'webtools-custom-tool' + (customSet.has(key) || customSet.has(name) ? ' active' : '');
+        btn.dataset.action = 'custom-tool';
+        btn.dataset.tool = key;
+        btn.dataset.toolName = name;
+        const desc = String(t.description || '').trim();
+        btn.innerHTML = `<span class="wt-check" aria-hidden="true"></span><div class="wt-text"><div class="wt-title">${esc(customToolTitle(t))}</div><div class="wt-sub">${esc(desc ? desc.slice(0, 80) : name)}</div></div>`;
+        webToolsCustomList.appendChild(btn);
+      }
+    }
+  }
   renderDocumentUI();
 
 
@@ -4895,21 +5188,56 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
 }
 
 
+  function persistCurrentWebTools(){
+    if (!state.currentChat) return;
+    state.currentChat.meta = state.currentChat.meta || {};
+    state.currentChat.meta.webtools = {
+      web: !!state.webtools.web,
+      search: !!state.webtools.search,
+      image: !!state.webtools.image,
+      document: !!state.webtools.document,
+      custom_tools: Array.isArray(state.webtools.custom_tools) ? state.webtools.custom_tools : []
+    };
+    saveChat(state.currentChat).catch(()=>{});
+  }
+
+  function closeCustomToolsFlyout(){
+    webToolsCustomList?.classList.add('hidden');
+    const customToggle = webToolsMenu?.querySelector('.webtools-item[data-action="custom-tools-toggle"]');
+    customToggle?.setAttribute('aria-expanded', 'false');
+  }
+
   function toggleWebToolsMenu(){
     if (!webToolsMenu) return;
-    webToolsMenu.classList.toggle('show');
-    if (webToolsBtn) webToolsBtn.setAttribute('aria-expanded', webToolsMenu.classList.contains('show')?'true':'false');
+    const willOpen = !webToolsMenu.classList.contains('show');
+    webToolsMenu.classList.toggle('show', willOpen);
+    if (!willOpen) closeCustomToolsFlyout();
+    if (webToolsBtn) webToolsBtn.setAttribute('aria-expanded', willOpen ? 'true':'false');
     // close other popovers for sanity
     attachMenu?.classList.remove('show');
   }
 
-  webToolsBtn?.addEventListener('click', (e)=>{ e.stopPropagation(); toggleWebToolsMenu(); renderWebTools(); });
+  webToolsBtn?.addEventListener('click', (e)=>{ e.preventDefault(); e.stopPropagation(); toggleWebToolsMenu(); renderWebTools(); });
   webToolsMenu?.addEventListener('click', (e)=>{
-  const item = e.target.closest('.webtools-item');
+  e.preventDefault();
+  e.stopPropagation();
+  const item = e.target.closest('.webtools-item, .webtools-custom-tool');
   if (!item) return;
   const action = item.dataset.action;
 
-  if (action === 'web') {
+  if (action === 'custom-tools-toggle') {
+    if (webToolsCustomList) webToolsCustomList.classList.toggle('hidden');
+    renderWebTools();
+    return;
+  }
+  if (action === 'custom-tool') {
+    const key = String(item.dataset.tool || item.dataset.toolName || '').trim();
+    const name = String(item.dataset.toolName || key).trim();
+    const set = enabledCustomTools();
+    if (set.has(key) || set.has(name)) { set.delete(key); set.delete(name); }
+    else set.add(name || key);
+    setEnabledCustomTools(set);
+  } else if (action === 'web') {
     state.webtools.web = !state.webtools.web;
   } else if (action === 'search') {
     if (item.hasAttribute('disabled')) return;
@@ -4923,17 +5251,33 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     return;
   }
 
-  // Persist per-chat override
-  if (state.currentChat) {
-    state.currentChat.meta = state.currentChat.meta || {};
-    state.currentChat.meta.webtools = { web: !!state.webtools.web, search: !!state.webtools.search, image: !!state.webtools.image, document: !!state.webtools.document };
-    saveChat(state.currentChat).catch(()=>{});
-  }
+  // Persist per-chat override, same behavior as Web/Search/Image/Document.
+  persistCurrentWebTools();
 
   renderWebTools();
-  webToolsMenu.classList.remove('show');
+  // Keep the menu open after every toggle. It closes only when the globe button is clicked.
 });
 
+
+
+  settingCustomToolsAutoEnable?.addEventListener('change', async ()=>{
+    state.ui.customToolsAutoEnable = !!settingCustomToolsAutoEnable.checked;
+    try { await api('settings_save', { custom_tools_auto_enable: state.ui.customToolsAutoEnable ? 1 : 0 }); } catch(_){ /* ignore */ }
+
+    // If the current chat has no explicit webtools override, apply the new default immediately.
+    const hasOverride = !!(state.currentChat?.meta && state.currentChat.meta.webtools);
+    if (!hasOverride) {
+      state.webtools.custom_tools = defaultCustomToolNames();
+      renderWebTools();
+    }
+  });
+
+  settingCustomToolsSave?.addEventListener('click', saveCustomToolsFromSettings);
+  settingCustomToolsFormat?.addEventListener('click', ()=>{
+    if (!settingCustomToolsJson) return;
+    try { settingCustomToolsJson.value = JSON.stringify(JSON.parse(String(settingCustomToolsJson.value || '[]')), null, 2); }
+    catch(ex){ if (settingCustomToolsStatus) settingCustomToolsStatus.textContent = 'Invalid JSON: ' + (ex?.message || ex); }
+  });
 
   // initial state
   renderWebTools();
@@ -5153,8 +5497,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     'html','htm','css','js','ts','jsx','tsx','py','php','java','c','h','cpp','hpp','rs','go','rb','sh','bash','zsh','sql'
   ]);
 
-  const MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB (base64 will be bigger)
-  const MAX_INLINE_AUDIO_BYTES = 15 * 1024 * 1024; // 15 MB (base64 will be bigger)
+  const bytesFromMb = (mb)=>Math.max(0, normalizeMbLimit(mb, 0, 0, 1024) * 1024 * 1024);
 
   function extOf(name){
     const p = String(name||'').split('.');
@@ -5191,15 +5534,23 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     const isOds = mime === 'application/vnd.oasis.opendocument.spreadsheet' || ext === 'ods';
     const isText = mime.startsWith('text/') || TEXT_EXT.has(ext);
 
-    // Images: inline as data URL (base64) so the model can actually see them.
+    // Images: optionally inline as data URL (portable but DB-heavy), or store only in uploads.
+    // When stored only as a file URL, the backend re-loads/encodes it for multimodal requests.
     if (isImg) {
-      if (Number(f.size||0) > MAX_INLINE_IMAGE_BYTES) {
-        // too large inline -> store for download, but warn via meta
+      const inlineImages = !!state.ui.mediaImageInline;
+      if (!inlineImages || Number(f.size||0) > bytesFromMb(state.ui.mediaImageInlineLimitMb ?? 8)) {
         const up = await uploadFile(f);
         state.attachments.push({
-          id, type: 'file', name: up.name, meta: `${human(up.size)} · image (too large inline)`,
-          url: up.url, mime: up.mime, size: up.size, file_id: up.id,
-          note: 'Image not inlined (too large).'
+          id,
+          type: 'image',
+          name: up.name || name,
+          meta: `${human(up.size || f.size)} · ${inlineImages ? 'image (too large inline)' : 'stored in uploads'}`,
+          url: up.url,
+          mime: up.mime || mime || 'image/*',
+          size: up.size || Number(f.size||0),
+          file_id: up.id,
+          stored_only: !inlineImages,
+          note: inlineImages ? 'Image not inlined (too large).' : 'Image stored in uploads; encoded again when sent to the model.'
         });
         return;
       }
@@ -5218,16 +5569,24 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
 
 
 
-    // Audio: inline as data URL so multimodal backends can actually hear it.
-    // Also upload it for download/history. Very large files are stored only to avoid giant JSON payloads.
+    // Audio: optionally inline as data URL (portable but DB-heavy), or store only in uploads.
+    // Stored-only audio is re-loaded/encoded by the backend when building multimodal input.
     if (isAudio) {
       const up = await uploadFile(f);
-      if (Number(f.size||0) > MAX_INLINE_AUDIO_BYTES) {
+      const inlineAudio = !!state.ui.mediaAudioInline;
+      if (!inlineAudio || Number(f.size||0) > bytesFromMb(state.ui.mediaAudioInlineLimitMb ?? 15)) {
         state.attachments.push({
-          id, type: 'file', name: up.name || name, meta: `${human(up.size || f.size)} · audio (too large inline)`,
-          url: up.url, mime: up.mime || mime || 'audio/*', size: up.size || Number(f.size||0), file_id: up.id,
-          not_sent: true,
-          note: 'Audio not inlined (too large).'
+          id,
+          type: 'audio',
+          name: up.name || name,
+          meta: `${human(up.size || f.size)} · ${inlineAudio ? 'audio (too large inline)' : 'stored in uploads'}`,
+          url: up.url,
+          mime: up.mime || mime || 'audio/*',
+          size: up.size || Number(f.size||0),
+          file_id: up.id,
+          stored_only: !inlineAudio,
+          note: inlineAudio ? 'Audio not inlined (too large).' : 'Audio stored in uploads; encoded again when sent to the model.',
+          format: audioFormatFromFile(name, mime)
         });
         return;
       }
@@ -9017,11 +9376,13 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
         state.webtools.search = !!(wt.search ?? wt.webSearch);
         state.webtools.image = !!(wt.image ?? wt.img ?? wt.image_generation);
         state.webtools.document = !!(wt.document ?? wt.doc ?? wt.workspace);
+        state.webtools.custom_tools = Array.isArray(wt.custom_tools) ? wt.custom_tools : [];
       } else {
         state.webtools.web = !!state.ui.webAutoEnable;
         state.webtools.search = !!state.ui.webSearchAutoEnable;
         state.webtools.image = !!state.ui.imageAutoEnable;
         state.webtools.document = false;
+        state.webtools.custom_tools = defaultCustomToolNames();
       }
       renderWebTools();
       renderDocumentUI();
@@ -9351,7 +9712,8 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
         web: !!(state.webtools && state.webtools.web),
         search: !!(state.webtools && state.webtools.search),
         image: !!(state.webtools && state.webtools.image),
-        document: !!(state.webtools && state.webtools.document)
+        document: !!(state.webtools && state.webtools.document),
+        custom_tools: Array.isArray(state.webtools?.custom_tools) ? state.webtools.custom_tools : []
       },
       document: (state.webtools && state.webtools.document) ? documentStateForPayload(chat) : { mode: 'chat' }
     };
@@ -10055,6 +10417,12 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
 const __tmi = parseInt(String(b.tool_max_iters ?? state.ui.toolMaxIters ?? 10), 10);
 state.ui.toolMaxIters = (Number.isFinite(__tmi) ? Math.min(50, Math.max(1, __tmi)) : 10);
 if (settingToolMaxIters) settingToolMaxIters.value = String(state.ui.toolMaxIters);
+state.ui.uploadHardLimitMb = normalizeMbLimit(b.upload_hard_limit_mb ?? state.ui.uploadHardLimitMb ?? 25, 25, 1, 1024);
+state.ui.mediaImageInlineLimitMb = normalizeMbLimit(b.media_image_inline_limit_mb ?? state.ui.mediaImageInlineLimitMb ?? 8, 8, 0, 1024);
+state.ui.mediaAudioInlineLimitMb = normalizeMbLimit(b.media_audio_inline_limit_mb ?? state.ui.mediaAudioInlineLimitMb ?? 15, 15, 0, 1024);
+if (settingUploadHardLimitMb) settingUploadHardLimitMb.value = String(state.ui.uploadHardLimitMb);
+if (settingMediaImageInlineLimitMb) settingMediaImageInlineLimitMb.value = String(state.ui.mediaImageInlineLimitMb);
+if (settingMediaAudioInlineLimitMb) settingMediaAudioInlineLimitMb.value = String(state.ui.mediaAudioInlineLimitMb);
 renderGeneralSettingsUI();
 
 // Web settings
@@ -10066,6 +10434,12 @@ if (settingWebSearchAutoEnable) settingWebSearchAutoEnable.checked = !!state.ui.
 
 state.ui.webPreferAttachments = (b.web_prefer_attachments == null) ? true : (Number(b.web_prefer_attachments) !== 0);
 if (settingWebPreferAtt) settingWebPreferAtt.checked = !!state.ui.webPreferAttachments;
+
+state.ui.mediaImageInline = (b.media_image_inline == null) ? true : (Number(b.media_image_inline) !== 0);
+if (settingMediaImageInline) settingMediaImageInline.checked = !!state.ui.mediaImageInline;
+
+state.ui.mediaAudioInline = (b.media_audio_inline == null) ? true : (Number(b.media_audio_inline) !== 0);
+if (settingMediaAudioInline) settingMediaAudioInline.checked = !!state.ui.mediaAudioInline;
 
 state.ui.webAllowPrivate = (b.web_allow_private == null) ? false : (Number(b.web_allow_private) !== 0);
 if (settingWebAllowPrivate) settingWebAllowPrivate.checked = !!state.ui.webAllowPrivate;
@@ -10126,6 +10500,11 @@ state.ui.imageBackground = String(b.image_background || state.ui.imageBackground
 state.ui.imageOutputFormat = String(b.image_output_format || state.ui.imageOutputFormat || 'png');
 
 state.ui.visionAutoAttachLastImage = (b.vision_auto_attach_last_image == null) ? true : (Number(b.vision_auto_attach_last_image) !== 0);
+state.ui.customToolsJson = String(b.custom_tools_json || '[]');
+state.ui.customTools = Array.isArray(b.custom_tools) ? b.custom_tools : [];
+state.ui.customToolsAutoEnable = (b.custom_tools_auto_enable == null) ? false : (Number(b.custom_tools_auto_enable) !== 0);
+if (settingCustomToolsAutoEnable) settingCustomToolsAutoEnable.checked = !!state.ui.customToolsAutoEnable;
+renderCustomToolsSettingsUI();
 
 // ComfyUI image settings
 state.ui.imageComfyUrl = String(b.image_comfyui_url || state.ui.imageComfyUrl || '');
@@ -10172,6 +10551,7 @@ renderImageSettingsUI();
       state.webtools.search = !!state.ui.webSearchAutoEnable;
       state.webtools.image = !!state.ui.imageAutoEnable;
         state.webtools.document = false;
+        state.webtools.custom_tools = defaultCustomToolNames();
       renderWebTools();
       if(state.ui.model) modelBtn.firstChild.textContent = headerModelText() + ' ';
       renderModels();

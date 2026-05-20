@@ -86,14 +86,19 @@
     <div class="document-title-wrap">
       <span class="document-badge">Documents</span>
       <select class="document-select" id="document-select" title="Active document" aria-label="Active document"></select>
-      <span class="document-title" id="document-title">Untitled</span>
-      <span class="document-version" id="document-version">v0</span>
+      <select class="document-version-select" id="document-version-select" title="Document version" aria-label="Document version"></select>
     </div>
     <div class="document-actions" aria-label="Document actions">
       <div class="document-view-toggle" role="group" aria-label="Document view mode">
         <button class="document-view-btn active" id="document-view-preview" type="button" title="Rendered preview">Preview</button>
         <button class="document-view-btn" id="document-view-raw" type="button" title="Raw markdown/text">Raw</button>
       </div>
+      <button class="icon-btn sm document-restore-version-btn" id="document-restore-version" title="Restore selected version" aria-label="Restore selected version">
+        <svg class="ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M3 12a9 9 0 1 0 3-6.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M3 3v6h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
       <button class="icon-btn sm document-copy-btn" id="document-copy" title="Copy document" aria-label="Copy document">
         <svg class="ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
           <path d="M8 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -204,6 +209,16 @@
       <div class="wt-sub">Create/edit an active document</div>
     </div>
   </button>
+  <div class="attach-sep"></div>
+  <button class="webtools-item webtools-custom-trigger" data-action="custom-tools-toggle" type="button" aria-expanded="false">
+    <span class="wt-check" aria-hidden="true"></span>
+    <div class="wt-text">
+      <div class="wt-title">Custom tools</div>
+      <div class="wt-sub">Enable created tools</div>
+    </div>
+    <span class="wt-arrow" aria-hidden="true">›</span>
+  </button>
+  <div class="webtools-custom-list hidden" id="webtools-custom-list" role="menu" aria-label="Custom tools"></div>
 </div>
 <textarea class="input-textarea" placeholder="Send a Message" rows="1"></textarea>
 <button class="voice-btn hidden" id="voice-btn" disabled="" title="Voice" aria-label="Voice">
@@ -212,6 +227,14 @@
     <path d="M19 11a7 7 0 0 1-14 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
     <path d="M12 18v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
     <path d="M8 22h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+</button>
+<button class="document-restore-btn hidden" id="document-restore" type="button" title="Open documents" aria-label="Open documents">
+  <svg class="ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M14 2v6h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M8 13h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <path d="M8 17h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
   </svg>
 </button>
 <button class="stop-btn" disabled="" title="Stop">■</button>
@@ -637,6 +660,7 @@
 <button aria-controls="tab-web" aria-selected="false" class="nav-item" data-tab="web" role="tab">Web</button>
 <button aria-controls="tab-search" aria-selected="false" class="nav-item" data-tab="search" role="tab">Search</button>
 <button aria-controls="tab-image" aria-selected="false" class="nav-item" data-tab="image" role="tab">Image</button>
+<button aria-controls="tab-custom-tools" aria-selected="false" class="nav-item" data-tab="custom-tools" role="tab">Custom Tools</button>
 <button aria-controls="tab-voice" aria-selected="false" class="nav-item" data-tab="voice" role="tab">Voice</button>
 <button aria-controls="tab-connections" aria-selected="false" class="nav-item" data-tab="connections" role="tab">Connections</button>
 <button aria-controls="tab-pricing" aria-selected="false" class="nav-item" data-tab="pricing" role="tab">Pricing</button>
@@ -649,6 +673,50 @@
   <div class="about-wrap">
     <h3>General</h3>
     <div class="hint" id="general-superadmin-note" style="margin-top:8px; margin-bottom:14px;">Only superadmins can change these global limits.</div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+        <input id="setting-media-image-inline" type="checkbox" />
+        <span>Store image uploads inline in the DB</span>
+      </label>
+      <div class="hint" style="margin-top:8px;">
+        On: image uploads are saved as Base64 in the chat JSON. Off: images stay in <code>uploads/</code> and are encoded again only when sent to the model.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+        <input id="setting-media-audio-inline" type="checkbox" />
+        <span>Store audio uploads inline in the DB</span>
+      </label>
+      <div class="hint" style="margin-top:8px;">
+        On: audio uploads are saved as Base64 in the chat JSON. Off: audio stays in <code>uploads/</code> and is encoded again only when sent to the model.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-upload-hard-limit-mb">Upload hard limit (MB)</label>
+      <input id="setting-upload-hard-limit-mb" type="number" min="1" max="1024" step="1" placeholder="25" />
+      <div class="hint" style="margin-top:8px;">
+        Absolute server-side upload cap for normal attachments. Default: 25 MB. Voice dictation uses its own endpoint and is not affected.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-media-image-inline-limit-mb">Image inline limit (MB)</label>
+      <input id="setting-media-image-inline-limit-mb" type="number" min="0" max="1024" step="1" placeholder="8" />
+      <div class="hint" style="margin-top:8px;">
+        Maximum image size saved as Base64 in the chat JSON when inline image storage is enabled. Default: 8 MB. 0 disables image inlining by size.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-media-audio-inline-limit-mb">Audio inline limit (MB)</label>
+      <input id="setting-media-audio-inline-limit-mb" type="number" min="0" max="1024" step="1" placeholder="15" />
+      <div class="hint" style="margin-top:8px;">
+        Maximum audio size saved as Base64 in the chat JSON when inline audio storage is enabled. Default: 15 MB. 0 disables audio inlining by size.
+      </div>
+    </div>
 
     <div class="form-field" style="max-width:520px; margin-bottom:14px;">
       <label for="setting-tool-max-iters">Max tool-call iterations</label>
@@ -1078,6 +1146,37 @@
 </section>
 
 
+<!-- Custom Tools -->
+<section class="tab-panel" data-panel="custom-tools" id="tab-custom-tools" role="tabpanel">
+  <div class="about-wrap">
+    <h3>Custom Tools</h3>
+    <div class="hint" style="margin-top:8px; margin-bottom:14px;">
+      Define OpenAI-compatible function tools. They appear under the 🌐 menu and can be enabled per chat.
+    </div>
+    <div class="form-field" style="max-width:760px; margin-bottom:14px;">
+      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+        <input id="setting-custom-tools-auto-enable" type="checkbox" />
+        <span>Activate custom tools automatically</span>
+      </label>
+      <div class="hint" style="margin-top:8px;">
+        When enabled, new chats start with all configured custom tools active. Each chat can still override this from the 🌐 menu.
+      </div>
+    </div>
+    <div class="form-field" style="max-width:760px; margin-bottom:14px;">
+      <label for="setting-custom-tools-json">Tools JSON</label>
+      <textarea id="setting-custom-tools-json" rows="16" spellcheck="false" placeholder='[{"name":"lookup_customer","description":"Look up a customer by email","endpoint":"https://api.example.com/customer","method":"POST","headers":{"Authorization":"Bearer ..."},"parameters":{"type":"object","properties":{"email":{"type":"string"}},"required":["email"]}}]'></textarea>
+      <div class="hint" style="margin-top:8px;">
+        Required: <code>name</code>, <code>description</code>, <code>endpoint</code>, <code>parameters</code>. Optional: <code>method</code> GET/POST, <code>headers</code>, <code>allow_private</code>, <code>timeout_sec</code>, <code>body_template</code>. POST sends <code>{"arguments": ...}</code> unless a body template is set.
+      </div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <button class="btn secondary" type="button" id="setting-custom-tools-format">Format JSON</button>
+      <button class="btn primary" type="button" id="setting-custom-tools-save">Save custom tools</button>
+      <span class="hint" id="setting-custom-tools-status"></span>
+    </div>
+  </div>
+</section>
+
 <!-- Voice -->
 <section class="tab-panel" data-panel="voice" id="tab-voice" role="tabpanel">
   <div class="about-wrap">
@@ -1342,7 +1441,7 @@
 <p>LocalLightChat - the high performance chat frontend.</p>
 <p><strong>Project URL:</strong> <a href="https://www.locallightai.com/llc/" target="_blank" rel="noopener">https://www.locallightai.com/llc/</a></p>
 <ul class="about-list">
-<li><strong>Version:</strong> 0.5.0</li>
+<li><strong>Version:</strong> 0.6.0</li>
 <li><strong>License:</strong> Apache License 2.0</li>
 <li><strong>Third-Party Notices:</strong> <a href="https://www.locallightai.com/llc/3rdparty.txt" target="_blank" rel="noopener">Tools & Licenses</a></li>
 <li><strong>Author:</strong> <a href="https://www.srware.net/en/" target="_blank" rel="noopener">SRWare</a></li>
