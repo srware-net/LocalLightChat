@@ -958,10 +958,11 @@
       <select id="setting-image-provider">
         <option value="openai">OpenAI Image API</option>
         <option value="openrouter">OpenRouter Image Models</option>
+        <option value="sdcpp">stable-diffusion.cpp</option>
         <option value="comfyui">ComfyUI</option>
       </select>
       <div class="hint" style="margin-top:8px;">
-        Choose which backend generates images. OpenAI uses <code>/v1/images/*</code>. OpenRouter uses <code>/chat/completions</code> with image output. ComfyUI uses your own server (workflow JSON).
+        Choose which backend generates images. OpenAI uses <code>/v1/images/*</code>. OpenRouter uses <code>/chat/completions</code> with image output. stable-diffusion.cpp uses its OpenAI-compatible <code>/images/generations</code> endpoint. ComfyUI uses your own server (workflow JSON).
       </div>
     </div>
 
@@ -1067,6 +1068,69 @@
       <button id="setting-image-openrouter-models-refresh" class="btn secondary" type="button">Refresh</button>
     </div>
     <div id="setting-image-openrouter-models-status" class="hint" style="margin-top:8px;">Only image-output models are shown when OpenRouter returns modality metadata.</div>
+  </div>
+</div>
+
+
+
+<div id="image-sdcpp-fields" class="hidden">
+  <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+    <label for="setting-image-sdcpp-base-url">stable-diffusion.cpp Base URL</label>
+    <input id="setting-image-sdcpp-base-url" type="url" placeholder="http://127.0.0.1:1234/v1" />
+    <div class="hint" style="margin-top:8px;">OpenAI-compatible endpoint as seen from the PHP backend. Default sd-server port is usually <code>1234</code>. You may enter either <code>http://host:1234</code> or <code>http://host:1234/v1</code>; requests go to <code>/v1/images/generations</code>. A browser GET on <code>/v1</code> may show “error”; use <code>/v1/models</code> as a basic check.</div>
+  </div>
+
+  <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+    <label for="setting-image-sdcpp-api-key">API Key (optional)</label>
+    <input id="setting-image-sdcpp-api-key" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="leave empty for local server" />
+    <div class="hint" style="margin-top:8px;">Only sent if filled. Local sd-server usually does not require this.</div>
+  </div>
+
+  <div class="form-field" style="max-width:720px; margin-bottom:14px;">
+    <label for="setting-image-sdcpp-model">Model</label>
+    <input id="setting-image-sdcpp-model" type="text" placeholder="flux-2-klein-base-4b-Q8_0.gguf" />
+  </div>
+
+  <div class="form-field" style="max-width:720px; margin-bottom:14px;">
+    <label for="setting-image-sdcpp-negative-prompt">Default negative prompt</label>
+    <textarea id="setting-image-sdcpp-negative-prompt" rows="3" spellcheck="false" placeholder="What should be excluded?"></textarea>
+  </div>
+
+  <div class="form-grid" style="max-width:720px;">
+    <div class="form-field"><label for="setting-image-sdcpp-width">Default width</label><input id="setting-image-sdcpp-width" type="number" placeholder="512" /></div>
+    <div class="form-field"><label for="setting-image-sdcpp-height">Default height</label><input id="setting-image-sdcpp-height" type="number" placeholder="512" /></div>
+    <div class="form-field"><label for="setting-image-sdcpp-batch">Default batch count</label><input id="setting-image-sdcpp-batch" type="number" placeholder="1" /></div>
+  </div>
+
+  <div class="form-grid" style="max-width:720px; margin-top:14px;">
+    <div class="form-field"><label for="setting-image-sdcpp-seed">Default seed</label><input id="setting-image-sdcpp-seed" type="number" placeholder="-1" /><div class="hint">-1 = random; stable-diffusion.cpp default is often 42.</div></div>
+    <div class="form-field"><label for="setting-image-sdcpp-steps">Default steps</label><input id="setting-image-sdcpp-steps" type="number" placeholder="20" /></div>
+    <div class="form-field"><label for="setting-image-sdcpp-cfg-scale">CFG scale</label><input id="setting-image-sdcpp-cfg-scale" type="number" step="0.1" placeholder="7" /></div>
+  </div>
+
+  <div class="form-grid" style="max-width:720px; margin-top:14px;">
+    <div class="form-field"><label for="setting-image-sdcpp-guidance">Distilled guidance</label><input id="setting-image-sdcpp-guidance" type="number" step="0.1" placeholder="3.5" /></div>
+    <div class="form-field"><label for="setting-image-sdcpp-sampling-method">Sampling method</label><input id="setting-image-sdcpp-sampling-method" type="text" placeholder="blank = model default, e.g. euler" /></div>
+    <div class="form-field"><label for="setting-image-sdcpp-scheduler">Scheduler</label><input id="setting-image-sdcpp-scheduler" type="text" placeholder="blank = model default" /></div>
+  </div>
+
+  <div class="form-grid" style="max-width:720px; margin-top:14px;">
+    <div class="form-field"><label for="setting-image-sdcpp-flow-shift">Flow shift</label><input id="setting-image-sdcpp-flow-shift" type="number" step="0.1" placeholder="blank = default" /></div>
+    <div class="form-field"><label for="setting-image-sdcpp-timeout">Max wait (seconds)</label><input id="setting-image-sdcpp-timeout" type="number" placeholder="900" /></div>
+  </div>
+
+  <div class="form-field" style="max-width:720px; margin-top:14px;">
+    <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+      <input id="setting-image-sdcpp-auto-vae-tiling-768" type="checkbox" />
+      <span>Enable memory-saving tiling automatically from 768 px</span>
+    </label>
+    <div class="hint" style="margin-top:8px;">Recommended for larger images to reduce VRAM usage. May slow down generation slightly.</div>
+  </div>
+
+  <div class="form-field" style="max-width:720px; margin-top:14px;">
+    <label for="setting-image-sdcpp-extra-args">Extra sd.cpp args</label>
+    <input id="setting-image-sdcpp-extra-args" type="text" spellcheck="false" placeholder="e.g. --vae-tiling --clip-skip -1" />
+    <div class="hint" style="margin-top:8px;">Sent as <code>sd_cpp_extra_args</code>. This is the escape hatch for flags the OpenAI API shape does not know.</div>
   </div>
 </div>
 
@@ -1441,7 +1505,7 @@
 <p>LocalLightChat - the high performance chat frontend.</p>
 <p><strong>Project URL:</strong> <a href="https://www.locallightai.com/llc/" target="_blank" rel="noopener">https://www.locallightai.com/llc/</a></p>
 <ul class="about-list">
-<li><strong>Version:</strong> 0.6.1</li>
+<li><strong>Version:</strong> 0.6.5</li>
 <li><strong>License:</strong> Apache License 2.0</li>
 <li><strong>Third-Party Notices:</strong> <a href="https://www.locallightai.com/llc/3rdparty.txt" target="_blank" rel="noopener">Tools & Licenses</a></li>
 <li><strong>Author:</strong> <a href="https://www.srware.net/en/" target="_blank" rel="noopener">SRWare</a></li>

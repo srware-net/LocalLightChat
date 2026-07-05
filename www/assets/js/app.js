@@ -855,6 +855,24 @@ const settingImageOpenrouterApiKey = $('#setting-image-openrouter-api-key');
 const settingImageOpenrouterModel = $('#setting-image-openrouter-model');
 const settingImageOpenrouterModelsRefresh = $('#setting-image-openrouter-models-refresh');
 const settingImageOpenrouterModelsStatus = $('#setting-image-openrouter-models-status');
+const imageSdCppFields = $('#image-sdcpp-fields');
+const settingImageSdCppBaseUrl = $('#setting-image-sdcpp-base-url');
+const settingImageSdCppApiKey = $('#setting-image-sdcpp-api-key');
+const settingImageSdCppModel = $('#setting-image-sdcpp-model');
+const settingImageSdCppNegativePrompt = $('#setting-image-sdcpp-negative-prompt');
+const settingImageSdCppWidth = $('#setting-image-sdcpp-width');
+const settingImageSdCppHeight = $('#setting-image-sdcpp-height');
+const settingImageSdCppBatch = $('#setting-image-sdcpp-batch');
+const settingImageSdCppSeed = $('#setting-image-sdcpp-seed');
+const settingImageSdCppSteps = $('#setting-image-sdcpp-steps');
+const settingImageSdCppCfgScale = $('#setting-image-sdcpp-cfg-scale');
+const settingImageSdCppGuidance = $('#setting-image-sdcpp-guidance');
+const settingImageSdCppSamplingMethod = $('#setting-image-sdcpp-sampling-method');
+const settingImageSdCppScheduler = $('#setting-image-sdcpp-scheduler');
+const settingImageSdCppFlowShift = $('#setting-image-sdcpp-flow-shift');
+const settingImageSdCppExtraArgs = $('#setting-image-sdcpp-extra-args');
+const settingImageSdCppTimeout = $('#setting-image-sdcpp-timeout');
+const settingImageSdCppAutoVaeTiling768 = $('#setting-image-sdcpp-auto-vae-tiling-768');
 const settingImageSize = $('#setting-image-size');
 const settingImageQuality = $('#setting-image-quality');
 const settingImageBackground = $('#setting-image-background');
@@ -2757,6 +2775,7 @@ const isImageConfigured = ()=>{
   const prov = String(state.ui.imageProvider || 'openai');
   if (prov === 'openai') return !!String(state.ui.imageApiKey || '').trim();
   if (prov === 'openrouter') return !!String(state.ui.imageOpenrouterApiKey || '').trim() && !!String(state.ui.imageOpenrouterModel || '').trim();
+  if (prov === 'sdcpp') return !!String(state.ui.imageSdCppBaseUrl || '').trim();
   if (prov === 'comfyui') {
     const url = String(state.ui.imageComfyUrl || '').trim();
     const wf = String(state.ui.imageComfyWorkflow || '').trim();
@@ -2845,7 +2864,26 @@ const renderImageSettingsUI = ()=>{
   if (imageOpenaiFields) imageOpenaiFields.classList.toggle('hidden', prov !== 'openai');
   if (imageOpenrouterFields) imageOpenrouterFields.classList.toggle('hidden', prov !== 'openrouter');
   if (prov === 'openrouter') maybeFetchOpenrouterImageModels(false);
+  if (imageSdCppFields) imageSdCppFields.classList.toggle('hidden', prov !== 'sdcpp');
   if (imageComfyFields) imageComfyFields.classList.toggle('hidden', prov !== 'comfyui');
+
+  if (settingImageSdCppBaseUrl) settingImageSdCppBaseUrl.value = String(state.ui.imageSdCppBaseUrl || 'http://127.0.0.1:1234/v1');
+  if (settingImageSdCppApiKey && settingImageSdCppApiKey !== document.activeElement) settingImageSdCppApiKey.value = String(state.ui.imageSdCppApiKey || '');
+  if (settingImageSdCppModel) settingImageSdCppModel.value = String(state.ui.imageSdCppModel || 'flux-2-klein-base-4b-Q8_0.gguf');
+  if (settingImageSdCppNegativePrompt && settingImageSdCppNegativePrompt !== document.activeElement) settingImageSdCppNegativePrompt.value = String(state.ui.imageSdCppNegativePrompt || '');
+  if (settingImageSdCppWidth) settingImageSdCppWidth.value = String(state.ui.imageSdCppWidth ?? 512);
+  if (settingImageSdCppHeight) settingImageSdCppHeight.value = String(state.ui.imageSdCppHeight ?? 512);
+  if (settingImageSdCppBatch) settingImageSdCppBatch.value = String(state.ui.imageSdCppBatch ?? 1);
+  if (settingImageSdCppSeed) settingImageSdCppSeed.value = String(state.ui.imageSdCppSeed ?? -1);
+  if (settingImageSdCppSteps) settingImageSdCppSteps.value = String(state.ui.imageSdCppSteps ?? 20);
+  if (settingImageSdCppCfgScale) settingImageSdCppCfgScale.value = String(state.ui.imageSdCppCfgScale ?? 7);
+  if (settingImageSdCppGuidance) settingImageSdCppGuidance.value = String(state.ui.imageSdCppGuidance ?? 3.5);
+  if (settingImageSdCppSamplingMethod) settingImageSdCppSamplingMethod.value = String(state.ui.imageSdCppSamplingMethod || '');
+  if (settingImageSdCppScheduler) settingImageSdCppScheduler.value = String(state.ui.imageSdCppScheduler || '');
+  if (settingImageSdCppFlowShift) settingImageSdCppFlowShift.value = String(state.ui.imageSdCppFlowShift || '');
+  if (settingImageSdCppExtraArgs) settingImageSdCppExtraArgs.value = String(state.ui.imageSdCppExtraArgs || '');
+  if (settingImageSdCppTimeout) settingImageSdCppTimeout.value = String(state.ui.imageSdCppTimeout ?? 900);
+  if (settingImageSdCppAutoVaeTiling768) settingImageSdCppAutoVaeTiling768.checked = !!state.ui.imageSdCppAutoVaeTiling768;
 
   if (settingImageComfyUrl) settingImageComfyUrl.value = String(state.ui.imageComfyUrl || '');
   if (settingImageComfyWorkflow && settingImageComfyWorkflow !== document.activeElement) settingImageComfyWorkflow.value = String(state.ui.imageComfyWorkflow || '');
@@ -3451,6 +3489,10 @@ settingImageProvider?.addEventListener('change', async ()=>{
     state.ui.imageOpenrouterBaseUrl = String(state.ui.imageOpenrouterBaseUrl || 'https://openrouter.ai/api/v1');
     state.ui.imageOpenrouterModel = String(state.ui.imageOpenrouterModel || 'google/gemini-3-pro-image-preview');
   }
+  if (state.ui.imageProvider === 'sdcpp') {
+    state.ui.imageSdCppBaseUrl = String(state.ui.imageSdCppBaseUrl || 'http://127.0.0.1:1234/v1');
+    state.ui.imageSdCppModel = String(state.ui.imageSdCppModel || 'flux-2-klein-base-4b-Q8_0.gguf');
+  }
   await saveImageSettings({ image_provider: state.ui.imageProvider });
   renderImageSettingsUI();
   if (state.ui.imageProvider === 'openrouter') maybeFetchOpenrouterImageModels(true);
@@ -3500,6 +3542,25 @@ settingImageOpenrouterModelsRefresh?.addEventListener('click', async ()=>{
   state.ui.imageOpenrouterModels = [];
   await maybeFetchOpenrouterImageModels(true);
 });
+
+
+settingImageSdCppBaseUrl?.addEventListener('change', async ()=>{ state.ui.imageSdCppBaseUrl = String(settingImageSdCppBaseUrl.value || '').trim() || 'http://127.0.0.1:1234/v1'; await saveImageSettings({ image_sdcpp_base_url: state.ui.imageSdCppBaseUrl }); renderImageSettingsUI(); });
+settingImageSdCppApiKey?.addEventListener('change', async ()=>{ state.ui.imageSdCppApiKey = String(settingImageSdCppApiKey.value || ''); await saveImageSettings({ image_sdcpp_api_key: state.ui.imageSdCppApiKey }); renderImageSettingsUI(); });
+settingImageSdCppModel?.addEventListener('change', async ()=>{ state.ui.imageSdCppModel = String(settingImageSdCppModel.value || 'flux-2-klein-base-4b-Q8_0.gguf'); await saveImageSettings({ image_sdcpp_model: state.ui.imageSdCppModel }); renderImageSettingsUI(); });
+settingImageSdCppNegativePrompt?.addEventListener('change', async ()=>{ state.ui.imageSdCppNegativePrompt = String(settingImageSdCppNegativePrompt.value || ''); await saveImageSettings({ image_sdcpp_negative_prompt: state.ui.imageSdCppNegativePrompt }); });
+settingImageSdCppWidth?.addEventListener('change', async ()=>{ state.ui.imageSdCppWidth = Math.max(64, parseIntSafe(settingImageSdCppWidth.value, 512)); await saveImageSettings({ image_sdcpp_width: state.ui.imageSdCppWidth }); });
+settingImageSdCppHeight?.addEventListener('change', async ()=>{ state.ui.imageSdCppHeight = Math.max(64, parseIntSafe(settingImageSdCppHeight.value, 512)); await saveImageSettings({ image_sdcpp_height: state.ui.imageSdCppHeight }); });
+settingImageSdCppBatch?.addEventListener('change', async ()=>{ state.ui.imageSdCppBatch = Math.max(1, parseIntSafe(settingImageSdCppBatch.value, 1)); await saveImageSettings({ image_sdcpp_batch: state.ui.imageSdCppBatch }); });
+settingImageSdCppSeed?.addEventListener('change', async ()=>{ state.ui.imageSdCppSeed = parseIntSafe(settingImageSdCppSeed.value, -1); await saveImageSettings({ image_sdcpp_seed: state.ui.imageSdCppSeed }); });
+settingImageSdCppSteps?.addEventListener('change', async ()=>{ state.ui.imageSdCppSteps = Math.max(1, parseIntSafe(settingImageSdCppSteps.value, 20)); await saveImageSettings({ image_sdcpp_steps: state.ui.imageSdCppSteps }); });
+settingImageSdCppCfgScale?.addEventListener('change', async ()=>{ state.ui.imageSdCppCfgScale = parseFloatSafe(settingImageSdCppCfgScale.value, 7); await saveImageSettings({ image_sdcpp_cfg_scale: state.ui.imageSdCppCfgScale }); });
+settingImageSdCppGuidance?.addEventListener('change', async ()=>{ state.ui.imageSdCppGuidance = parseFloatSafe(settingImageSdCppGuidance.value, 3.5); await saveImageSettings({ image_sdcpp_guidance: state.ui.imageSdCppGuidance }); });
+settingImageSdCppSamplingMethod?.addEventListener('change', async ()=>{ state.ui.imageSdCppSamplingMethod = String(settingImageSdCppSamplingMethod.value || '').trim(); await saveImageSettings({ image_sdcpp_sampling_method: state.ui.imageSdCppSamplingMethod }); });
+settingImageSdCppScheduler?.addEventListener('change', async ()=>{ state.ui.imageSdCppScheduler = String(settingImageSdCppScheduler.value || '').trim(); await saveImageSettings({ image_sdcpp_scheduler: state.ui.imageSdCppScheduler }); });
+settingImageSdCppFlowShift?.addEventListener('change', async ()=>{ state.ui.imageSdCppFlowShift = String(settingImageSdCppFlowShift.value || '').trim(); await saveImageSettings({ image_sdcpp_flow_shift: state.ui.imageSdCppFlowShift }); });
+settingImageSdCppExtraArgs?.addEventListener('change', async ()=>{ state.ui.imageSdCppExtraArgs = String(settingImageSdCppExtraArgs.value || '').trim(); await saveImageSettings({ image_sdcpp_extra_args: state.ui.imageSdCppExtraArgs }); });
+settingImageSdCppTimeout?.addEventListener('change', async ()=>{ state.ui.imageSdCppTimeout = Math.max(30, parseIntSafe(settingImageSdCppTimeout.value, 900)); await saveImageSettings({ image_sdcpp_timeout_sec: state.ui.imageSdCppTimeout }); });
+settingImageSdCppAutoVaeTiling768?.addEventListener('change', async ()=>{ state.ui.imageSdCppAutoVaeTiling768 = !!settingImageSdCppAutoVaeTiling768.checked; await saveImageSettings({ image_sdcpp_auto_vae_tiling_768: state.ui.imageSdCppAutoVaeTiling768 ? 1 : 0 }); });
 
 settingImageSize?.addEventListener('change', async ()=>{
   state.ui.imageSize = String(settingImageSize.value || 'auto');
@@ -3846,11 +3907,11 @@ settingImageComfyAutodetect?.addEventListener('click', async ()=>{
       if (masked){
         span.textContent = it.api_key || '—';
         span.dataset.masked = 'false';
-        btn.textContent = 'verbergen';
+        btn.textContent = 'Hide';
       } else {
         span.textContent = maskKey(it.api_key);
         span.dataset.masked = 'true';
-        btn.textContent = 'anzeigen';
+        btn.textContent = 'Show	';
       }
     }
   });
@@ -3888,7 +3949,7 @@ settingImageComfyAutodetect?.addEventListener('click', async ()=>{
           <div class="conn-actions">
             ${readonly ? '' : `
               <button class="btn ${enabled?'btn-ghost':'btn-primary'}" data-cmd="toggle" data-id="${it.id}">${enabled?'Disable':'Enable'}</button>
-              <button class="btn btn-ghost" data-cmd="edit" data-id="${it.id}">Bearbeiten</button>
+              <button class="btn btn-ghost" data-cmd="edit" data-id="${it.id}">Edit</button>
               <button class="btn btn-danger" data-cmd="delete" data-id="${it.id}">Delete</button>
             `}
           </div>
@@ -3897,7 +3958,7 @@ settingImageComfyAutodetect?.addEventListener('click', async ()=>{
           <span class="key-pill">
             <span>Key:</span>
             <span class="key-text" data-id="${it.id}" data-masked="true">${readonly ? '—' : maskKey(it.api_key)}</span>
-            ${readonly ? '' : `<button class="key-btn" data-cmd="reveal" data-id="${it.id}">anzeigen</button>`}
+            ${readonly ? '' : `<button class="key-btn" data-cmd="reveal" data-id="${it.id}">Show</button>`}
           </span>
           ${it.notes?`<div class="muted" style="margin-top:6px">${esc(it.notes)}</div>`:''}
         </div>
@@ -3952,7 +4013,7 @@ async function renderUsers(){
     const ctrl = document.createElement('div');
     ctrl.className = 'users-list-controls';
     ctrl.innerHTML = `
-      <button type="button" class="btn btn-ghost" id="users-toggle-more">${showAll ? 'Weniger anzeigen' : `Alle anzeigen (${state.users.length})`}</button>
+      <button type="button" class="btn btn-ghost" id="users-toggle-more">${showAll ? 'Show less' : `Show all (${state.users.length})`}</button>
       <span class="muted">${showAll ? '' : `zeige ${list.length} von ${state.users.length}`}</span>
     `;
     usersList.appendChild(ctrl);
@@ -5137,6 +5198,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       const ip = String(state.ui.imageProvider || 'openai');
       const label = (ip === 'comfyui') ? 'ComfyUI'
         : (ip === 'openrouter') ? 'OpenRouter Image Models'
+        : (ip === 'sdcpp') ? 'stable-diffusion.cpp'
         : 'OpenAI Image API';
       sub.textContent = canUse ? label : 'Configure in Settings → Image';
     }
@@ -10495,6 +10557,23 @@ state.ui.imageModel = String(b.image_model || state.ui.imageModel || 'gpt-image-
 state.ui.imageOpenrouterBaseUrl = String(b.image_openrouter_base_url || state.ui.imageOpenrouterBaseUrl || 'https://openrouter.ai/api/v1');
 state.ui.imageOpenrouterApiKey = String(b.image_openrouter_api_key || '');
 state.ui.imageOpenrouterModel = String(b.image_openrouter_model || state.ui.imageOpenrouterModel || 'google/gemini-3-pro-image-preview');
+state.ui.imageSdCppBaseUrl = String(b.image_sdcpp_base_url || state.ui.imageSdCppBaseUrl || 'http://127.0.0.1:1234/v1');
+state.ui.imageSdCppApiKey = String(b.image_sdcpp_api_key || '');
+state.ui.imageSdCppModel = String(b.image_sdcpp_model || state.ui.imageSdCppModel || 'flux-2-klein-base-4b-Q8_0.gguf');
+state.ui.imageSdCppNegativePrompt = String(b.image_sdcpp_negative_prompt || state.ui.imageSdCppNegativePrompt || '');
+state.ui.imageSdCppWidth = (b.image_sdcpp_width == null) ? (state.ui.imageSdCppWidth ?? 512) : Number(b.image_sdcpp_width);
+state.ui.imageSdCppHeight = (b.image_sdcpp_height == null) ? (state.ui.imageSdCppHeight ?? 512) : Number(b.image_sdcpp_height);
+state.ui.imageSdCppBatch = (b.image_sdcpp_batch == null) ? (state.ui.imageSdCppBatch ?? 1) : Number(b.image_sdcpp_batch);
+state.ui.imageSdCppSeed = (b.image_sdcpp_seed == null) ? (state.ui.imageSdCppSeed ?? -1) : Number(b.image_sdcpp_seed);
+state.ui.imageSdCppSteps = (b.image_sdcpp_steps == null) ? (state.ui.imageSdCppSteps ?? 20) : Number(b.image_sdcpp_steps);
+state.ui.imageSdCppCfgScale = (b.image_sdcpp_cfg_scale == null) ? (state.ui.imageSdCppCfgScale ?? 7) : Number(b.image_sdcpp_cfg_scale);
+state.ui.imageSdCppGuidance = (b.image_sdcpp_guidance == null) ? (state.ui.imageSdCppGuidance ?? 3.5) : Number(b.image_sdcpp_guidance);
+state.ui.imageSdCppSamplingMethod = String(b.image_sdcpp_sampling_method || state.ui.imageSdCppSamplingMethod || '');
+state.ui.imageSdCppScheduler = String(b.image_sdcpp_scheduler || state.ui.imageSdCppScheduler || '');
+state.ui.imageSdCppFlowShift = String(b.image_sdcpp_flow_shift || state.ui.imageSdCppFlowShift || '');
+state.ui.imageSdCppExtraArgs = String(b.image_sdcpp_extra_args || state.ui.imageSdCppExtraArgs || '');
+state.ui.imageSdCppTimeout = (b.image_sdcpp_timeout_sec == null) ? (state.ui.imageSdCppTimeout ?? 900) : Number(b.image_sdcpp_timeout_sec);
+state.ui.imageSdCppAutoVaeTiling768 = (b.image_sdcpp_auto_vae_tiling_768 == null) ? (state.ui.imageSdCppAutoVaeTiling768 ?? true) : (Number(b.image_sdcpp_auto_vae_tiling_768) !== 0);
 state.ui.imageAutoEnable = (b.image_auto_enable == null) ? false : (Number(b.image_auto_enable) !== 0);
 state.ui.imageSize = String(b.image_size || state.ui.imageSize || 'auto');
 state.ui.imageQuality = String(b.image_quality || state.ui.imageQuality || 'auto');

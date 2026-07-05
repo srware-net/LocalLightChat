@@ -1210,26 +1210,31 @@ function llc_tools_for_request(bool $enableWebRead, bool $enableWebSearch, bool 
       'type' => 'function',
       'function' => [
         'name' => 'image_generate',
-        'description' => 'Generate an image from a text prompt using the configured Image provider (Settings → Image). The result will be attached as an image to the current assistant message.',
+        'description' => 'Generate an image from a text prompt using the configured Image provider (Settings → Image). Always extract explicit user directives such as image size (e.g. 768x768), steps, seed, batch count, CFG/guidance, and negative prompt into the matching structured parameters instead of leaving them only in the prompt. Example: generate a cat, 5 steps, 768x768 must call image_generate with prompt=a cat, steps=5, size=768x768, width=768, height=768. The result will be attached as an image to the current assistant message.',
         'parameters' => [
           'type' => 'object',
           'properties' => [
-            'prompt' => ['type' => 'string', 'description' => 'Describe the image you want'],
+            'prompt' => ['type' => 'string', 'description' => 'Describe the image content only. Do not include technical generation directives here if they can be represented by width/height/size/steps/seed/guidance/batch_size/negative_prompt.'],
             // ComfyUI FLUX/SD3 workflows can have separate text inputs.
             // If omitted, the backend falls back to `prompt`.
             'prompt_clip_l' => ['type' => 'string', 'description' => 'Prompt for CLIP-L (ComfyUI FLUX/SD3 only; optional)'],
             'prompt_t5xxl' => ['type' => 'string', 'description' => 'Prompt for T5-XXL (ComfyUI FLUX/SD3 only; optional)'],
             'n' => ['type' => 'integer', 'description' => 'How many images to generate (default 1)'],
-            'size' => ['type' => 'string', 'description' => 'Image size (e.g., 1024x1024) or "auto"'],
+            'size' => ['type' => 'string', 'description' => 'Image size (e.g., 768x768 or 1024x1024) or "auto"; for stable-diffusion.cpp this is also converted to width/height.'],
             'quality' => ['type' => 'string', 'description' => 'Image quality (auto/high/medium/low or hd/standard for DALL·E models)'],
             'background' => ['type' => 'string', 'description' => 'Background (auto/transparent/opaque) — GPT image models only'],
             'output_format' => ['type' => 'string', 'description' => 'Output format (png/jpeg/webp) — GPT image models only'],
-            'seed' => ['type' => 'integer', 'description' => 'Seed (ComfyUI only; -1 = random)'],
-            'steps' => ['type' => 'integer', 'description' => 'Steps (ComfyUI only)'],
-            'guidance' => ['type' => 'number', 'description' => 'Guidance/CFG (ComfyUI only)'],
-            'width' => ['type' => 'integer', 'description' => 'Width (ComfyUI only)'],
-            'height' => ['type' => 'integer', 'description' => 'Height (ComfyUI only)'],
-            'batch_size' => ['type' => 'integer', 'description' => 'Batch size (ComfyUI only)'],
+            'seed' => ['type' => 'integer', 'description' => 'Seed (ComfyUI / stable-diffusion.cpp; -1 = random)'],
+            'steps' => ['type' => 'integer', 'description' => 'Steps (ComfyUI / stable-diffusion.cpp)'],
+            'guidance' => ['type' => 'number', 'description' => 'Guidance/CFG (ComfyUI / stable-diffusion.cpp)'],
+            'cfg_scale' => ['type' => 'number', 'description' => 'CFG scale for stable-diffusion.cpp when explicitly requested'],
+            'negative_prompt' => ['type' => 'string', 'description' => 'Negative prompt (stable-diffusion.cpp only; optional)'],
+            'sampling_method' => ['type' => 'string', 'description' => 'Sampling method for stable-diffusion.cpp when explicitly requested'],
+            'scheduler' => ['type' => 'string', 'description' => 'Scheduler for stable-diffusion.cpp when explicitly requested'],
+            'flow_shift' => ['type' => 'number', 'description' => 'Flow shift for stable-diffusion.cpp when explicitly requested'],
+            'width' => ['type' => 'integer', 'description' => 'Width (ComfyUI / stable-diffusion.cpp)'],
+            'height' => ['type' => 'integer', 'description' => 'Height (ComfyUI / stable-diffusion.cpp)'],
+            'batch_size' => ['type' => 'integer', 'description' => 'Batch size (ComfyUI / stable-diffusion.cpp)'],
           ],
           'required' => ['prompt']
         ]
@@ -2697,6 +2702,346 @@ function llc_tool_image_generate_openrouter(PDO $db, string $uid, array $u, arra
   ];
 }
 
+
+function llc_sdcpp_arg_quote(string $v): string {
+  $v = str_replace(["\\", "'", "\r", "\n"], ["\\\\", "'\\''", ' ', ' '], $v);
+  return "'" . $v . "'";
+}
+
+function llc_sdcpp_append_arg(array &$parts, string $flag, $value, bool $quote = false): void {
+  if ($value === null) return;
+  $s = trim((string)$value);
+  if ($s === '' || strtolower($s) === 'default' || strtolower($s) === 'auto') return;
+  $parts[] = $flag;
+  $parts[] = $quote ? llc_sdcpp_arg_quote($s) : $s;
+}
+
+
+function llc_sdcpp_parse_int($value, int $min, int $max): ?int {
+  if ($value === null) return null;
+  if (is_int($value) || is_float($value)) $n = (int)$value;
+  else {
+    $str = trim((string)$value);
+    if ($str === '' || !preg_match('/^-?\d+$/', $str)) return null;
+    $n = (int)$str;
+  }
+  if ($n < $min) $n = $min;
+  if ($n > $max) $n = $max;
+  return $n;
+}
+
+function llc_sdcpp_parse_float($value, float $min, float $max): ?float {
+  if ($value === null) return null;
+  if (is_int($value) || is_float($value)) $n = (float)$value;
+  else {
+    $str = trim(str_replace(',', '.', (string)$value));
+    if ($str === '' || !is_numeric($str)) return null;
+    $n = (float)$str;
+  }
+  if ($n < $min) $n = $min;
+  if ($n > $max) $n = $max;
+  return $n;
+}
+
+function llc_sdcpp_size_from_string(string $s): ?array {
+  $s = trim($s);
+  if ($s === '' || strtolower($s) === 'auto') return null;
+  if (preg_match('/(?<!\d)(\d{2,4})\s*[x×]\s*(\d{2,4})(?!\d)/iu', $s, $m)) {
+    $w = llc_sdcpp_parse_int($m[1], 64, 4096);
+    $h = llc_sdcpp_parse_int($m[2], 64, 4096);
+    if ($w !== null && $h !== null) return [$w, $h];
+  }
+  return null;
+}
+
+function llc_sdcpp_text_has_explicit_steps(string $text): bool {
+  if (trim($text) === '') return false;
+  return (bool)(
+    preg_match('/(?:^|[\s,.;])(?:steps?|sampling\s+steps?)\s*[:=]?\s*\d{1,3}(?=$|[\s,.;])/iu', $text) ||
+    preg_match('/(?:^|[\s,.;])\d{1,3}\s*(?:steps?|sampling\s+steps?)(?=$|[\s,.;])/iu', $text)
+  );
+}
+
+function llc_sdcpp_args_with_prompt_overrides(array $args): array {
+  // The LLM may invent parameters (notably 50 steps) even when the user did not
+  // ask for them. For stable-diffusion.cpp, only trust steps when the user text
+  // or prompt actually contains an explicit steps directive.
+  $prompt = (string)($args['prompt'] ?? '');
+  $context = (string)($args['__llc_context_text'] ?? '');
+  $parseText = trim($prompt . "\n" . $context);
+
+  if ((!isset($args['width']) || !isset($args['height']))) {
+    $size = isset($args['size']) ? llc_sdcpp_size_from_string((string)$args['size']) : null;
+    if (!$size) $size = llc_sdcpp_size_from_string($parseText);
+    if ($size) {
+      $args['width'] = $args['width'] ?? $size[0];
+      $args['height'] = $args['height'] ?? $size[1];
+      $args['__llc_sdcpp_size_explicit'] = true;
+    }
+  } elseif (isset($args['width'], $args['height'])) {
+    $args['__llc_sdcpp_size_explicit'] = true;
+  }
+
+  $userExplicitSteps = llc_sdcpp_text_has_explicit_steps($parseText);
+  if ($userExplicitSteps) {
+    if (preg_match('/(?:^|[\s,.;])(?:steps?|sampling\s+steps?)\s*[:=]?\s*(\d{1,3})(?=$|[\s,.;])/iu', $parseText, $m) ||
+        preg_match('/(?:^|[\s,.;])(\d{1,3})\s*(?:steps?|sampling\s+steps?)(?=$|[\s,.;])/iu', $parseText, $m)) {
+      $v = llc_sdcpp_parse_int($m[1], 1, 250);
+      if ($v !== null) $args['steps'] = $v;
+    }
+    $args['__llc_sdcpp_steps_explicit'] = true;
+  } else {
+    // If the model silently inserted steps without the user asking, drop them.
+    unset($args['steps']);
+  }
+
+  if (!isset($args['seed'])) {
+    if (preg_match('/(?:^|[\s,.;])seed\s*[:=]?\s*(-?\d{1,12})(?=$|[\s,.;])/iu', $parseText, $m)) {
+      $v = llc_sdcpp_parse_int($m[1], -1, 2147483647); if ($v !== null) $args['seed'] = $v;
+    }
+  }
+
+  if (!isset($args['n']) && !isset($args['batch_size'])) {
+    if (preg_match('/(?:^|[\s,.;])(?:batch|batch\s*count|batch\s*size|n)\s*[:=]?\s*(\d{1,2})(?=$|[\s,.;])/iu', $parseText, $m)) {
+      $v = llc_sdcpp_parse_int($m[1], 1, 16); if ($v !== null) $args['batch_size'] = $v;
+    }
+  }
+
+  if (!isset($args['cfg_scale']) && !isset($args['guidance'])) {
+    if (preg_match('/(?:^|[\s,.;])(?:cfg|cfg\s*scale)\s*[:=]?\s*(\d+(?:[\.,]\d+)?)(?=$|[\s,.;])/iu', $parseText, $m)) {
+      $v = llc_sdcpp_parse_float($m[1], 0.0, 100.0); if ($v !== null) $args['cfg_scale'] = $v;
+    }
+  }
+
+  if (!isset($args['guidance'])) {
+    if (preg_match('/(?:^|[\s,.;])(?:distilled\s+guidance|guidance)\s*[:=]?\s*(\d+(?:[\.,]\d+)?)(?=$|[\s,.;])/iu', $parseText, $m)) {
+      $v = llc_sdcpp_parse_float($m[1], 0.0, 100.0); if ($v !== null) $args['guidance'] = $v;
+    }
+  }
+
+  return $args;
+}
+
+function llc_sdcpp_normalize_base_url(string $base): string {
+  $base = trim($base);
+  if ($base === '') $base = 'http://127.0.0.1:1234/v1';
+  $base = rtrim($base, '/');
+  // The OpenAI-compatible stable-diffusion.cpp endpoints live below /v1.
+  // Let users paste either http://host:1234 or http://host:1234/v1.
+  if (!preg_match('#/v1$#i', $base)) $base .= '/v1';
+  return $base;
+}
+
+function llc_sdcpp_cfg(PDO $db, array $u): array {
+  $base = (string)(llc_image_cfg_get($db, $u, 'image_sdcpp_base_url') ?? 'http://127.0.0.1:1234/v1');
+  return [
+    'base' => llc_sdcpp_normalize_base_url($base),
+    'key' => (string)(llc_image_cfg_get($db, $u, 'image_sdcpp_api_key') ?? ''),
+    'model' => (string)(llc_image_cfg_get($db, $u, 'image_sdcpp_model') ?? 'flux-2-klein-base-4b-Q8_0.gguf'),
+  ];
+}
+
+function llc_tool_image_generate_sdcpp(PDO $db, string $uid, array $u, array $args, callable $sendStatus): array {
+  $args = llc_sdcpp_args_with_prompt_overrides($args);
+  $cfg = llc_sdcpp_cfg($db, $u);
+  $base = $cfg['base'];
+  $key = $cfg['key'];
+  $model = trim((string)($cfg['model'] ?: 'flux-2-klein-base-4b-Q8_0.gguf'));
+  if ($model === '') $model = 'flux-2-klein-base-4b-Q8_0.gguf';
+
+  $prompt = trim((string)($args['prompt'] ?? ''));
+  if ($prompt === '') return ['ok'=>false,'error'=>'image_generate: missing prompt'];
+
+  $width = (int)($args['width'] ?? (llc_image_cfg_get($db, $u, 'image_sdcpp_width') ?? 512));
+  $height = (int)($args['height'] ?? (llc_image_cfg_get($db, $u, 'image_sdcpp_height') ?? 512));
+  $n = (int)($args['n'] ?? $args['batch_size'] ?? (llc_image_cfg_get($db, $u, 'image_sdcpp_batch') ?? 1));
+  $seed = (int)($args['seed'] ?? (llc_image_cfg_get($db, $u, 'image_sdcpp_seed') ?? -1));
+  $stepsExplicit = !empty($args['__llc_sdcpp_steps_explicit']);
+  $steps = $stepsExplicit ? (int)$args['steps'] : null;
+  $cfgScaleExplicit = array_key_exists('cfg_scale', $args);
+  $guidanceExplicit = array_key_exists('guidance', $args);
+  $cfgScale = (float)($args['cfg_scale'] ?? (llc_image_cfg_get($db, $u, 'image_sdcpp_cfg_scale') ?? 7));
+  $guidance = (float)($args['guidance'] ?? (llc_image_cfg_get($db, $u, 'image_sdcpp_guidance') ?? 3.5));
+  $negative = (string)($args['negative_prompt'] ?? (llc_image_cfg_get($db, $u, 'image_sdcpp_negative_prompt') ?? ''));
+  $sampling = (string)($args['sampling_method'] ?? (llc_image_cfg_get($db, $u, 'image_sdcpp_sampling_method') ?? ''));
+  $scheduler = (string)($args['scheduler'] ?? (llc_image_cfg_get($db, $u, 'image_sdcpp_scheduler') ?? ''));
+  $flowShift = (string)($args['flow_shift'] ?? (llc_image_cfg_get($db, $u, 'image_sdcpp_flow_shift') ?? ''));
+  $extraRaw = trim((string)(llc_image_cfg_get($db, $u, 'image_sdcpp_extra_args') ?? ''));
+  $timeoutSec = (int)(llc_image_cfg_get($db, $u, 'image_sdcpp_timeout_sec') ?? '900');
+  $autoVaeTiling = (int)(llc_image_cfg_get($db, $u, 'image_sdcpp_auto_vae_tiling_768') ?? '1') !== 0;
+
+  if ($width < 64) $width = 64; if ($width > 4096) $width = 4096;
+  if ($height < 64) $height = 64; if ($height > 4096) $height = 4096;
+  if ($n < 1) $n = 1; if ($n > 16) $n = 16;
+  if ($steps !== null) { if ($steps < 1) $steps = 1; if ($steps > 250) $steps = 250; }
+  if ($timeoutSec < 30) $timeoutSec = 30; if ($timeoutSec > 3600) $timeoutSec = 3600;
+
+  // OpenAI compatibility only knows prompt/n/size. Everything else must use the
+  // native sdcpp schema inside <sd_cpp_extra_args>. Do not send legacy/direct keys
+  // like steps/sample_steps/cfg_scale: they are not the documented schema and can
+  // produce weird fallback/default behaviour on newer server builds.
+  $extraObj = [
+    'seed' => $seed,
+    'width' => $width,
+    'height' => $height,
+    'batch_count' => $n,
+  ];
+
+  $sampleParams = [];
+  if ($stepsExplicit && $steps !== null) $sampleParams['sample_steps'] = $steps;
+  if (trim($sampling) !== '') $sampleParams['sample_method'] = trim($sampling);
+  if (trim($scheduler) !== '') $sampleParams['scheduler'] = trim($scheduler);
+  if (trim($flowShift) !== '') $sampleParams['flow_shift'] = is_numeric($flowShift) ? (float)$flowShift : trim($flowShift);
+  if ($cfgScaleExplicit || $guidanceExplicit) {
+    $sampleParams['guidance'] = [];
+    if ($cfgScaleExplicit) $sampleParams['guidance']['txt_cfg'] = $cfgScale;
+    if ($guidanceExplicit) $sampleParams['guidance']['distilled_guidance'] = $guidance;
+  }
+  if (!empty($sampleParams)) $extraObj['sample_params'] = $sampleParams;
+
+  if (trim($negative) !== '') $extraObj['negative_prompt'] = $negative;
+
+  // Flux2/Vulkan often finishes sampling and then dies in VAE decode at 768x768.
+  // Native schema supports tiled VAE; enable it automatically for >=768px on either axis.
+  // The user's Extra Args JSON below can still override/disable this.
+  $vaeTilingAuto = $autoVaeTiling && ($width >= 768 || $height >= 768);
+  if ($vaeTilingAuto) {
+    $extraObj['vae_tiling_params'] = [
+      'enabled' => true,
+      'tile_size_x' => 0,
+      'tile_size_y' => 0,
+      'target_overlap' => 0.5,
+      'rel_size_x' => 0.0,
+      'rel_size_y' => 0.0,
+    ];
+  }
+
+  if ($extraRaw !== '') {
+    $decodedExtra = json_decode($extraRaw, true);
+    if (is_array($decodedExtra)) {
+      $extraObj = array_replace_recursive($extraObj, $decodedExtra);
+    } else {
+      // Last-resort compatibility for users who paste raw CLI-ish options.
+      $prompt .= ' ' . $extraRaw;
+    }
+  }
+
+  $extraJson = json_encode($extraObj, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE);
+  if ($extraJson !== false && $extraJson !== '') {
+    $prompt .= '<sd_cpp_extra_args>' . $extraJson . '</sd_cpp_extra_args>';
+  }
+
+  $payload = [
+    'model' => $model,
+    'prompt' => $prompt,
+    'n' => $n,
+    'size' => $width . 'x' . $height,
+    'response_format' => 'b64_json',
+  ];
+
+  $stepsLabel = ($stepsExplicit && $steps !== null) ? (string)$steps : 'server default';
+  $vaeLabel = (!empty($extraObj['vae_tiling_params']['enabled'])) ? ', vae tiling on' : ($autoVaeTiling ? ', vae tiling auto off for size' : ', vae tiling disabled');
+  $sendStatus('stable-diffusion.cpp params sent: ' . $width . 'x' . $height . ', steps ' . $stepsLabel . ', seed ' . $seed . ', batch ' . $n . $vaeLabel . (isset($args['__llc_context_text']) ? ' (parsed user message)' : ''));
+
+  $hdrs = ['Content-Type: application/json', 'Accept: application/json'];
+  if (trim($key) !== '' && trim($key) !== '********') $hdrs[] = 'Authorization: Bearer ' . $key;
+
+  $sendStatus('Calling stable-diffusion.cpp image server…');
+
+  $ch = curl_init($base . '/images/generations');
+  curl_setopt_array($ch, [
+    CURLOPT_POST => true,
+    CURLOPT_HTTPHEADER => $hdrs,
+    CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_TIMEOUT => $timeoutSec,
+    CURLOPT_CONNECTTIMEOUT => 20,
+  ]);
+  $raw = curl_exec($ch);
+  $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+  $err = curl_error($ch);
+  curl_close($ch);
+
+  if ($raw === false || $raw === null) {
+    $msg = $err ?: 'unknown cURL error';
+    if ($code) $msg .= ' (HTTP ' . $code . ')';
+    return ['ok'=>false,'error'=>'stable-diffusion.cpp request failed: ' . $msg];
+  }
+
+  $j = json_decode((string)$raw, true);
+  if (!is_array($j)) {
+    $snip = trim(substr((string)$raw, 0, 800));
+    return ['ok'=>false,'error'=>'stable-diffusion.cpp: invalid JSON (HTTP ' . $code . ').' . ($snip !== '' ? ' Response: ' . $snip : '')];
+  }
+  if (isset($j['error'])) {
+    $msg = is_array($j['error']) ? (string)($j['error']['message'] ?? 'error') : (string)$j['error'];
+    return ['ok'=>false,'error'=>'stable-diffusion.cpp error (HTTP ' . $code . '): ' . $msg];
+  }
+  if ($code !== 0 && ($code < 200 || $code >= 300)) {
+    return ['ok'=>false,'error'=>'stable-diffusion.cpp error (HTTP ' . $code . '): ' . json_encode($j, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)];
+  }
+
+  $data = $j['data'] ?? null;
+  if (!is_array($data) || count($data) === 0) return ['ok'=>false,'error'=>'stable-diffusion.cpp: empty result'];
+
+  $out = [];
+  $i = 0;
+  foreach ($data as $item) {
+    $i++;
+    if (!is_array($item)) continue;
+    $bytes = '';
+    $mime = 'image/png';
+    $ext = 'png';
+    $b64 = isset($item['b64_json']) && is_string($item['b64_json']) ? $item['b64_json'] : '';
+    if ($b64 !== '') {
+      if (preg_match('#^data:(image/[^;]+);base64,(.+)$#s', $b64, $m)) { $mime = strtolower($m[1]); $b64 = $m[2]; }
+      $decoded = base64_decode($b64, true);
+      if ($decoded !== false) $bytes = $decoded;
+    } elseif (isset($item['url']) && is_string($item['url']) && $item['url'] !== '') {
+      $dl = curl_init($item['url']);
+      curl_setopt_array($dl, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 120, CURLOPT_CONNECTTIMEOUT => 20]);
+      $bytes = (string)curl_exec($dl);
+      $ct = (string)curl_getinfo($dl, CURLINFO_CONTENT_TYPE);
+      curl_close($dl);
+      if ($ct) $mime = $ct;
+    }
+    if ($bytes === '') continue;
+    if (str_contains($mime, 'jpeg') || str_contains($mime, 'jpg')) $ext = 'jpg';
+    elseif (str_contains($mime, 'webp')) $ext = 'webp';
+
+    $name = 'generated-sdcpp-' . gmdate('Ymd-His') . '-' . $i . '.' . $ext;
+    $sendStatus('Saving image…');
+    $file = llc_store_generated_file($db, $uid, $bytes, $name, $mime);
+    $att = [
+      'id' => 'att_' . bin2hex(random_bytes(5)),
+      'type' => 'image',
+      'name' => $file['name'],
+      'mime' => $file['mime'],
+      'size' => $file['size'],
+      'url' => $file['url'],
+      'file_id' => $file['file_id'],
+      'generated' => true,
+      'model' => $model,
+      'provider' => 'sdcpp'
+    ];
+    llc_sse_send(['type'=>'attachment','attachment'=>$att]);
+    $out[] = $att;
+  }
+
+  if (count($out) === 0) return ['ok'=>false,'error'=>'stable-diffusion.cpp: no decodable image returned'];
+
+  return [
+    'ok' => true,
+    'provider' => 'sdcpp',
+    'model' => $model,
+    'count' => count($out),
+    'attachments' => array_map(function($a){ return [
+      'file_id' => $a['file_id'], 'name' => $a['name'], 'mime' => $a['mime'], 'size' => $a['size'], 'url' => $a['url']
+    ]; }, $out),
+    'note' => 'Image(s) attached to the assistant message.'
+  ];
+}
+
 function llc_tool_image_generate(PDO $db, string $uid, array $u, array $args, callable $sendStatus): array {
   $provider = llc_image_cfg_get($db, $u, 'image_provider') ?? 'openai';
   if ($provider === 'comfyui') {
@@ -2704,6 +3049,9 @@ function llc_tool_image_generate(PDO $db, string $uid, array $u, array $args, ca
   }
   if ($provider === 'openrouter') {
     return llc_tool_image_generate_openrouter($db, $uid, $u, $args, $sendStatus);
+  }
+  if ($provider === 'sdcpp') {
+    return llc_tool_image_generate_sdcpp($db, $uid, $u, $args, $sendStatus);
   }
   if ($provider !== 'openai') {
     return ['ok'=>false,'error'=>'Image provider not supported: ' . $provider];
@@ -3166,7 +3514,18 @@ function llc_document_versions(array $doc): array {
   return array_values($map);
 }
 
-function llc_execute_tool_call(PDO $db, array $u, array $toolCall, bool $emitStatus = true, ?array &$documentState = null): array {
+function llc_last_user_text_from_messages(array $messages): string {
+  for ($i = count($messages) - 1; $i >= 0; $i--) {
+    $m = $messages[$i] ?? null;
+    if (!is_array($m)) continue;
+    if ((string)($m['role'] ?? '') !== 'user') continue;
+    $txt = trim(llc_msg_content_to_text($m['content'] ?? ''));
+    if ($txt !== '') return $txt;
+  }
+  return '';
+}
+
+function llc_execute_tool_call(PDO $db, array $u, array $toolCall, bool $emitStatus = true, ?array &$documentState = null, array $contextMessages = []): array {
   $uid = (string)($u['id'] ?? '');
   $id = (string)($toolCall['id'] ?? '');
   if ($id === '') $id = 'toolcall_' . bin2hex(random_bytes(6));
@@ -3409,6 +3768,13 @@ $sendStatus = function(string $message, string $phase = '') use ($emitStatus) {
     if ($name === 'image_generate') {
       $prompt = (string)($args['prompt'] ?? '');
       if (trim($prompt) === '') throw new RuntimeException('image_generate: missing prompt');
+
+      // Do not trust the model to preserve generation directives in tool args.
+      // Keep the original user message available to the image provider parser so
+      // "generate foo, 5 steps, 768x768" still becomes steps=5 / size=768x768
+      // even if the tool call only contains prompt="foo".
+      $ctxText = llc_last_user_text_from_messages($contextMessages);
+      if ($ctxText !== '') $args['__llc_context_text'] = $ctxText;
 
       $sendStatus('Generating image…');
       if (function_exists('llc_ensure_default_settings')) llc_ensure_default_settings($db, $uid);
@@ -3730,6 +4096,24 @@ function llc_bootstrap(): void {
   $image_openrouter_base_url = llc_image_cfg_get($db, $u, 'image_openrouter_base_url') ?? 'https://openrouter.ai/api/v1';
   $image_openrouter_api_key = llc_image_cfg_get($db, $u, 'image_openrouter_api_key') ?? '';
   $image_openrouter_model = llc_image_cfg_get($db, $u, 'image_openrouter_model') ?? 'google/gemini-3-pro-image-preview';
+  $image_sdcpp_base_url = llc_image_cfg_get($db, $u, 'image_sdcpp_base_url') ?? 'http://127.0.0.1:1234/v1';
+  $image_sdcpp_api_key = llc_image_cfg_get($db, $u, 'image_sdcpp_api_key') ?? '';
+  $image_sdcpp_model = llc_image_cfg_get($db, $u, 'image_sdcpp_model') ?? 'flux-2-klein-base-4b-Q8_0.gguf';
+  $image_sdcpp_negative_prompt = llc_image_cfg_get($db, $u, 'image_sdcpp_negative_prompt') ?? '';
+  $image_sdcpp_width = llc_image_cfg_get($db, $u, 'image_sdcpp_width') ?? '512';
+  $image_sdcpp_height = llc_image_cfg_get($db, $u, 'image_sdcpp_height') ?? '512';
+  $image_sdcpp_batch = llc_image_cfg_get($db, $u, 'image_sdcpp_batch') ?? '1';
+  $image_sdcpp_seed = llc_image_cfg_get($db, $u, 'image_sdcpp_seed') ?? '-1';
+  $image_sdcpp_steps = llc_image_cfg_get($db, $u, 'image_sdcpp_steps') ?? '20';
+  $image_sdcpp_cfg_scale = llc_image_cfg_get($db, $u, 'image_sdcpp_cfg_scale') ?? '7';
+  $image_sdcpp_guidance = llc_image_cfg_get($db, $u, 'image_sdcpp_guidance') ?? '3.5';
+  $image_sdcpp_sampling_method = llc_image_cfg_get($db, $u, 'image_sdcpp_sampling_method') ?? '';
+  $image_sdcpp_scheduler = llc_image_cfg_get($db, $u, 'image_sdcpp_scheduler') ?? '';
+  $image_sdcpp_flow_shift = llc_image_cfg_get($db, $u, 'image_sdcpp_flow_shift') ?? '';
+  $image_sdcpp_extra_args = llc_image_cfg_get($db, $u, 'image_sdcpp_extra_args') ?? '';
+  $image_sdcpp_timeout_sec = llc_image_cfg_get($db, $u, 'image_sdcpp_timeout_sec') ?? '900';
+  $image_sdcpp_auto_vae_tiling_768 = llc_image_cfg_get($db, $u, 'image_sdcpp_auto_vae_tiling_768');
+  if ($image_sdcpp_auto_vae_tiling_768 === null || $image_sdcpp_auto_vae_tiling_768 === '') $image_sdcpp_auto_vae_tiling_768 = '1';
 
   // Per-user UI toggles (even when Image is inherited globally)
   $image_auto_enable = llc_get_setting($db, $uid, 'image_auto_enable');
@@ -3767,6 +4151,7 @@ function llc_bootstrap(): void {
   if ($inherit_global_image === 1) {
     if (trim($image_api_key) !== '') $image_api_key = '********';
     if (trim($image_openrouter_api_key) !== '') $image_openrouter_api_key = '********';
+    if (trim($image_sdcpp_api_key) !== '') $image_sdcpp_api_key = '********';
   }
 
   // Voice settings (may be inherited from shared global settings)
@@ -3887,6 +4272,23 @@ function llc_bootstrap(): void {
     'image_openrouter_base_url'=>(string)$image_openrouter_base_url,
     'image_openrouter_api_key'=>(string)$image_openrouter_api_key,
     'image_openrouter_model'=>(string)$image_openrouter_model,
+    'image_sdcpp_base_url'=>(string)$image_sdcpp_base_url,
+    'image_sdcpp_api_key'=>(string)$image_sdcpp_api_key,
+    'image_sdcpp_model'=>(string)$image_sdcpp_model,
+    'image_sdcpp_negative_prompt'=>(string)$image_sdcpp_negative_prompt,
+    'image_sdcpp_width'=>(int)$image_sdcpp_width,
+    'image_sdcpp_height'=>(int)$image_sdcpp_height,
+    'image_sdcpp_batch'=>(int)$image_sdcpp_batch,
+    'image_sdcpp_seed'=>(int)$image_sdcpp_seed,
+    'image_sdcpp_steps'=>(int)$image_sdcpp_steps,
+    'image_sdcpp_cfg_scale'=>(float)$image_sdcpp_cfg_scale,
+    'image_sdcpp_guidance'=>(float)$image_sdcpp_guidance,
+    'image_sdcpp_sampling_method'=>(string)$image_sdcpp_sampling_method,
+    'image_sdcpp_scheduler'=>(string)$image_sdcpp_scheduler,
+    'image_sdcpp_flow_shift'=>(string)$image_sdcpp_flow_shift,
+    'image_sdcpp_extra_args'=>(string)$image_sdcpp_extra_args,
+    'image_sdcpp_timeout_sec'=>(int)$image_sdcpp_timeout_sec,
+    'image_sdcpp_auto_vae_tiling_768'=>(int)$image_sdcpp_auto_vae_tiling_768,
     'image_auto_enable'=>(int)$image_auto_enable,
     'vision_auto_attach_last_image'=>(int)$vision_auto_attach_last_image,
     'image_size'=>(string)$image_size,
@@ -4030,6 +4432,7 @@ function llc_settings_save(): void {
     $blocked = [
       'image_provider','image_base_url','image_api_key','image_model',
       'image_openrouter_base_url','image_openrouter_api_key','image_openrouter_model',
+      'image_sdcpp_base_url','image_sdcpp_api_key','image_sdcpp_model','image_sdcpp_negative_prompt','image_sdcpp_width','image_sdcpp_height','image_sdcpp_batch','image_sdcpp_seed','image_sdcpp_steps','image_sdcpp_cfg_scale','image_sdcpp_guidance','image_sdcpp_sampling_method','image_sdcpp_scheduler','image_sdcpp_flow_shift','image_sdcpp_extra_args','image_sdcpp_timeout_sec','image_sdcpp_auto_vae_tiling_768',
       'image_size','image_quality','image_background','image_output_format',
       'image_comfyui_url','image_comfyui_workflow_json','image_comfyui_bindings_json','image_comfyui_seed','image_comfyui_steps','image_comfyui_guidance',
       'image_comfyui_width','image_comfyui_height','image_comfyui_batch','image_comfyui_apply_defaults','image_comfyui_timeout_sec'
@@ -4242,6 +4645,33 @@ function llc_settings_save(): void {
     if ($v === '') $v = 'google/gemini-3-pro-image-preview';
     $setImageCfg('image_openrouter_model', $v);
   }
+  if (array_key_exists('image_sdcpp_base_url', $j)) {
+    $v = llc_sdcpp_normalize_base_url((string)($j['image_sdcpp_base_url'] ?? 'http://127.0.0.1:1234/v1'));
+    $setImageCfg('image_sdcpp_base_url', $v);
+  }
+  if (array_key_exists('image_sdcpp_api_key', $j)) {
+    $setImageCfg('image_sdcpp_api_key', (string)($j['image_sdcpp_api_key'] ?? ''));
+  }
+  if (array_key_exists('image_sdcpp_model', $j)) {
+    $v = (string)($j['image_sdcpp_model'] ?? 'flux-2-klein-base-4b-Q8_0.gguf');
+    if ($v === '') $v = 'flux-2-klein-base-4b-Q8_0.gguf';
+    $setImageCfg('image_sdcpp_model', $v);
+  }
+  if (array_key_exists('image_sdcpp_negative_prompt', $j)) $setImageCfg('image_sdcpp_negative_prompt', (string)($j['image_sdcpp_negative_prompt'] ?? ''));
+  if (array_key_exists('image_sdcpp_width', $j)) { $v=(int)($j['image_sdcpp_width'] ?? 512); if($v<64)$v=64; if($v>4096)$v=4096; $setImageCfg('image_sdcpp_width',(string)$v); }
+  if (array_key_exists('image_sdcpp_height', $j)) { $v=(int)($j['image_sdcpp_height'] ?? 512); if($v<64)$v=64; if($v>4096)$v=4096; $setImageCfg('image_sdcpp_height',(string)$v); }
+  if (array_key_exists('image_sdcpp_batch', $j)) { $v=(int)($j['image_sdcpp_batch'] ?? 1); if($v<1)$v=1; if($v>16)$v=16; $setImageCfg('image_sdcpp_batch',(string)$v); }
+  if (array_key_exists('image_sdcpp_seed', $j)) $setImageCfg('image_sdcpp_seed', (string)((int)($j['image_sdcpp_seed'] ?? -1)));
+  if (array_key_exists('image_sdcpp_steps', $j)) { $v=(int)($j['image_sdcpp_steps'] ?? 20); if($v<1)$v=1; if($v>250)$v=250; $setImageCfg('image_sdcpp_steps',(string)$v); }
+  if (array_key_exists('image_sdcpp_cfg_scale', $j)) { $v=(float)($j['image_sdcpp_cfg_scale'] ?? 7); if(!is_finite($v))$v=7; $setImageCfg('image_sdcpp_cfg_scale',(string)$v); }
+  if (array_key_exists('image_sdcpp_guidance', $j)) { $v=(float)($j['image_sdcpp_guidance'] ?? 3.5); if(!is_finite($v))$v=3.5; $setImageCfg('image_sdcpp_guidance',(string)$v); }
+  if (array_key_exists('image_sdcpp_sampling_method', $j)) $setImageCfg('image_sdcpp_sampling_method', (string)($j['image_sdcpp_sampling_method'] ?? ''));
+  if (array_key_exists('image_sdcpp_scheduler', $j)) $setImageCfg('image_sdcpp_scheduler', (string)($j['image_sdcpp_scheduler'] ?? ''));
+  if (array_key_exists('image_sdcpp_flow_shift', $j)) $setImageCfg('image_sdcpp_flow_shift', (string)($j['image_sdcpp_flow_shift'] ?? ''));
+  if (array_key_exists('image_sdcpp_extra_args', $j)) $setImageCfg('image_sdcpp_extra_args', (string)($j['image_sdcpp_extra_args'] ?? ''));
+  if (array_key_exists('image_sdcpp_timeout_sec', $j)) { $v=(int)($j['image_sdcpp_timeout_sec'] ?? 900); if($v<30)$v=30; if($v>3600)$v=3600; $setImageCfg('image_sdcpp_timeout_sec',(string)$v); }
+  if (array_key_exists('image_sdcpp_auto_vae_tiling_768', $j)) $setImageCfg('image_sdcpp_auto_vae_tiling_768', ((int)($j['image_sdcpp_auto_vae_tiling_768'] ?? 1) !== 0) ? '1' : '0');
+
   if (array_key_exists('image_auto_enable', $j)) {
     $v = (int)$j['image_auto_enable'];
     llc_set_setting($db, $uid, 'image_auto_enable', (string)($v === 0 ? '0' : '1'));
@@ -7495,6 +7925,8 @@ $payload = array_merge([
       $imgProvider = (string)(llc_image_cfg_get($db, $u, 'image_provider') ?? 'openai');
       if ($imgProvider === 'comfyui') {
         $hintParts[] = "If the user asks for an image, call image_generate({prompt}). For ComfyUI: only pass steps/guidance/seed/width/height/batch_size if the user explicitly requested them. Do NOT pass size/quality/background/output_format for ComfyUI.";
+      } elseif ($imgProvider === 'sdcpp' || $imgProvider === 'stable-diffusion.cpp' || $imgProvider === 'stable_diffusion_cpp') {
+        $hintParts[] = "If the user asks for an image, call image_generate. For stable-diffusion.cpp, if the user asks for image generation, call image_generate. You MUST pass explicit generation directives as structured args: 768x768 -> size:'768x768' plus width:768,height:768; '5 steps' -> steps:5; seed -> seed; CFG/guidance -> guidance or cfg_scale; batch/n -> batch_size or n; negative prompt -> negative_prompt. Do not leave these directives only in prompt.";
       } else {
         $hintParts[] = "If the user asks for an image, call image_generate({prompt}).";
       }
@@ -7581,7 +8013,7 @@ $payload = array_merge([
         foreach ($toolCalls as $tc) {
           if (!is_array($tc)) continue;
           try {
-            $workMessages[] = llc_execute_tool_call($db, $u, $tc, true, $documentState);
+            $workMessages[] = llc_execute_tool_call($db, $u, $tc, true, $documentState, $workMessages);
           } catch (Throwable $e) {
             llc_dbg_log('tool_exec_error', ['iter'=>$iter, 'error'=>$e->getMessage()]);
             llc_sse_error('Tool execution failed: ' . $e->getMessage());
