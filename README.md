@@ -31,14 +31,7 @@ Website: https://www.locallightai.com/llc/
 ## Download
 
 Ready-to-use portable packages:
-
-| Platform | Download |
-|---|---|
-| Windows x64 | [Windows x64](https://www.locallightai.com/llc/downloads/llc_windows_x64.zip) |
-| Linux x64 | [Linux x64](https://www.locallightai.com/llc/downloads/llc_linux_x64.tar.gz) |
-| Linux ARM64 | [Linux ARM64](https://www.locallightai.com/llc/downloads/llc_linux_arm64.tar.gz) |
-| macOS | coming soon |
-
+https://github.com/srware-net/LocalLightChat/releases
 
 ## Docker
 
