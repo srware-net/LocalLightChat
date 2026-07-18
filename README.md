@@ -30,7 +30,8 @@ Website: https://www.locallightai.com/llc/
 
 ## Download
 
-Ready-to-use portable packages:
+Ready-to-use portable packages: 
+
 https://github.com/srware-net/LocalLightChat/releases
 
 ## Docker
