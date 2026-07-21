@@ -238,6 +238,19 @@ function llc_migrate(PDO $db): void {
     );
   ");
 
+  // Managed code workspaces. Files live on disk under LLC_WORKSPACES_DIR/<id>/project.
+  $db->exec("
+    CREATE TABLE IF NOT EXISTS workspaces (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+  ");
+  $db->exec("CREATE INDEX IF NOT EXISTS idx_workspaces_user_updated ON workspaces(user_id, updated_at DESC);");
+
   // --- Migrations for existing DBs ---
   // Add missing columns when upgrading older installations.
   $colsChats = array_column($db->query("PRAGMA table_info(chats)")->fetchAll(), 'name');

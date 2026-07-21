@@ -22,6 +22,8 @@ if (!defined('LLC_DEBUG_LOGFILE')) define('LLC_DEBUG_LOGFILE', __DIR__ . '/data/
 if (!defined('LLC_UPLOADS_DIR')) define('LLC_UPLOADS_DIR', __DIR__ . '/uploads');
 // Where temporary export/job files are stored. Default: <this folder>/tmp
 if (!defined('LLC_TMP_DIR')) define('LLC_TMP_DIR', __DIR__ . '/tmp');
+// Where managed code workspaces are stored. Keep this path private from the web server.
+if (!defined('LLC_WORKSPACES_DIR')) define('LLC_WORKSPACES_DIR', __DIR__ . '/workspaces');
 
 function llc_uploads_dir(): string {
   $dir = trim((string)LLC_UPLOADS_DIR);
@@ -32,6 +34,12 @@ function llc_uploads_dir(): string {
 function llc_tmp_dir(): string {
   $dir = trim((string)LLC_TMP_DIR);
   if ($dir === '') $dir = __DIR__ . '/tmp';
+  return rtrim($dir, "/\\");
+}
+
+function llc_workspaces_dir(): string {
+  $dir = trim((string)LLC_WORKSPACES_DIR);
+  if ($dir === '') $dir = __DIR__ . '/workspaces';
   return rtrim($dir, "/\\");
 }
 
@@ -98,6 +106,18 @@ try {
 
     case 'file_upload': llc_file_upload(); break;
     case 'file_delete': llc_file_delete(); break;
+
+    case 'workspace_list': llc_workspace_list(); break;
+    case 'workspace_create': llc_workspace_create(); break;
+    case 'workspace_import': llc_workspace_import(); break;
+    case 'workspace_rename': llc_workspace_rename(); break;
+    case 'workspace_files': llc_workspace_files(); break;
+    case 'workspace_file_create': llc_workspace_file_create(); break;
+    case 'workspace_file_upload': llc_workspace_file_upload(); break;
+    case 'workspace_file_download': llc_workspace_file_download(); break;
+    case 'workspace_file_delete': llc_workspace_file_delete(); break;
+    case 'workspace_export': llc_workspace_export(); break;
+    case 'workspace_delete': llc_workspace_delete(); break;
 
     case 'chat_stream': llc_chat_stream(); break;
 
@@ -1083,8 +1103,18 @@ function llc_user_delete(): void {
     if ($cntSA <= 1) llc_json(['error'=>'Cannot delete last superadmin'], 409);
   }
 
+  $workspaceIds = [];
+  try {
+    $stw = $db->prepare("SELECT id FROM workspaces WHERE user_id=?");
+    $stw->execute([$id]);
+    $workspaceIds = array_map(fn($r)=>(string)$r['id'], $stw->fetchAll(PDO::FETCH_ASSOC));
+  } catch (Throwable $_) { /* older database during migration edge case */ }
+
   $st = $db->prepare("DELETE FROM users WHERE id=?");
   $st->execute([$id]);
+  foreach ($workspaceIds as $workspaceId) {
+    try { llc_workspace_remove_tree(llc_workspace_base_dir($workspaceId)); } catch (Throwable $_) { /* best effort */ }
+  }
 
   llc_json(['ok'=>true]);
 }
@@ -1157,10 +1187,10 @@ function llc_tools_enabled(array $j): bool {
   // Tools can be enabled independently (web read, web search, image generation).
   // If we forget to include a toggle here, the tool loop never runs and the model
   // can only answer with text.
-  return (!empty($wt['web']) || !empty($wt['search']) || !empty($wt['image']) || !empty($wt['document']) || !empty($wt['custom_tools']));
+  return (!empty($wt['web']) || !empty($wt['search']) || !empty($wt['image']) || !empty($wt['document']) || !empty($wt['code_workspace']) || !empty($wt['custom_tools']));
 }
 
-function llc_tools_for_request(bool $enableWebRead, bool $enableWebSearch, bool $enableImage, bool $enableDocument = false): array {
+function llc_tools_for_request(bool $enableWebRead, bool $enableWebSearch, bool $enableImage, bool $enableDocument = false, bool $enableWorkspace = false, string $workspaceAccess = 'read'): array {
   $tools = [];
 
   if ($enableWebRead) {
@@ -1240,6 +1270,130 @@ function llc_tools_for_request(bool $enableWebRead, bool $enableWebSearch, bool 
         ]
       ]
     ];
+  }
+
+  if ($enableWorkspace) {
+    $tools[] = [
+      'type'=>'function',
+      'function'=>[
+        'name'=>'workspace_tree',
+        'description'=>'List files and directories in the active code workspace. Start here to understand project structure instead of asking for the whole project context.',
+        'parameters'=>[
+          'type'=>'object',
+          'properties'=>[
+            'path'=>['type'=>'string','description'=>'Relative directory path; empty means workspace root'],
+            'depth'=>['type'=>'integer','description'=>'Maximum recursive depth, 1-12'],
+            'max_entries'=>['type'=>'integer','description'=>'Maximum returned entries, 1-1000'],
+            'include_ignored'=>['type'=>'boolean','description'=>'Include dependency/cache directories such as .git, node_modules and vendor'],
+          ]
+        ]
+      ]
+    ];
+    $tools[] = [
+      'type'=>'function',
+      'function'=>[
+        'name'=>'workspace_search',
+        'description'=>'Search text files in the active code workspace, similar to grep. Returns matching paths, line numbers and snippets without loading whole files into model context. Prefer this for locating identifiable text; read surrounding lines only when they are actually needed.',
+        'parameters'=>[
+          'type'=>'object',
+          'properties'=>[
+            'query'=>['type'=>'string','description'=>'Text or PCRE-compatible regular expression to search for'],
+            'path'=>['type'=>'string','description'=>'Relative file or directory to search; empty means workspace root'],
+            'regex'=>['type'=>'boolean','description'=>'Interpret query as regular expression'],
+            'case_sensitive'=>['type'=>'boolean','description'=>'Use case-sensitive matching'],
+            'include'=>['type'=>'string','description'=>'Optional relative glob, e.g. *.php or assets/**/*.js'],
+            'max_matches'=>['type'=>'integer','description'=>'Maximum matches, 1-300'],
+            'include_ignored'=>['type'=>'boolean','description'=>'Include dependency/cache directories such as .git, node_modules and vendor'],
+          ],
+          'required'=>['query']
+        ]
+      ]
+    ];
+    $tools[] = [
+      'type'=>'function',
+      'function'=>[
+        'name'=>'workspace_read',
+        'description'=>'Read a bounded line range from a text file in the active code workspace. Read the smallest useful range for local questions or edits; broader or complete reads are appropriate only when the task genuinely requires overall file understanding. Returns numbered lines and a SHA-256 hash for safe subsequent edits.',
+        'parameters'=>[
+          'type'=>'object',
+          'properties'=>[
+            'path'=>['type'=>'string','description'=>'Relative file path'],
+            'start_line'=>['type'=>'integer','description'=>'First line, starting at 1'],
+            'end_line'=>['type'=>'integer','description'=>'Last line; at most 1000 lines per call'],
+          ],
+          'required'=>['path']
+        ]
+      ]
+    ];
+    if ($workspaceAccess === 'write') {
+      $tools[] = [
+        'type'=>'function',
+        'function'=>[
+          'name'=>'workspace_write',
+          'description'=>'Create a new text file or replace the complete contents of an existing text file. Prefer workspace_replace for small targeted edits. Supply expected_sha256 when overwriting a file previously read.',
+          'parameters'=>[
+            'type'=>'object',
+            'properties'=>[
+              'path'=>['type'=>'string','description'=>'Relative file path'],
+              'content'=>['type'=>'string','description'=>'Complete new file content'],
+              'expected_sha256'=>['type'=>'string','description'=>'Optional hash returned by workspace_read; edit fails if the file changed'],
+              'create'=>['type'=>'boolean','description'=>'Allow creating a missing file; defaults to true'],
+            ],
+            'required'=>['path','content']
+          ]
+        ]
+      ];
+      $tools[] = [
+        'type'=>'function',
+        'function'=>[
+          'name'=>'workspace_replace',
+          'description'=>'Perform a precise literal or regular-expression replacement in one text file. Prefer this for local, unambiguous edits after obtaining the current hash with the smallest useful read. Do not read the whole file merely because an edit was requested. The edit is applied only when the match count equals expected_replacements, and a snapshot is created automatically.',
+          'parameters'=>[
+            'type'=>'object',
+            'properties'=>[
+              'path'=>['type'=>'string','description'=>'Relative file path'],
+              'search'=>['type'=>'string','description'=>'Exact text or PCRE-compatible regular expression'],
+              'replacement'=>['type'=>'string','description'=>'Replacement text; regex replacements may use $1 etc.'],
+              'regex'=>['type'=>'boolean','description'=>'Interpret search as regular expression'],
+              'expected_replacements'=>['type'=>'integer','description'=>'Exact number of replacements required'],
+              'expected_sha256'=>['type'=>'string','description'=>'Required hash returned by workspace_read'],
+              'dry_run'=>['type'=>'boolean','description'=>'Count matches without changing the file'],
+            ],
+            'required'=>['path','search','replacement','expected_replacements','expected_sha256']
+          ]
+        ]
+      ];
+      $tools[] = [
+        'type'=>'function',
+        'function'=>[
+          'name'=>'workspace_delete',
+          'description'=>'Delete one regular file from the active workspace. A snapshot is created automatically. Directories cannot be deleted in this version.',
+          'parameters'=>[
+            'type'=>'object',
+            'properties'=>[
+              'path'=>['type'=>'string','description'=>'Relative file path'],
+              'expected_sha256'=>['type'=>'string','description'=>'Required hash returned by workspace_read'],
+            ],
+            'required'=>['path','expected_sha256']
+          ]
+        ]
+      ];
+      $tools[] = [
+        'type'=>'function',
+        'function'=>[
+          'name'=>'workspace_restore',
+          'description'=>'Restore one file from a snapshot_id returned by a previous workspace write, replace or delete operation.',
+          'parameters'=>[
+            'type'=>'object',
+            'properties'=>[
+              'path'=>['type'=>'string','description'=>'Relative file path stored in the snapshot'],
+              'snapshot_id'=>['type'=>'string','description'=>'Snapshot id returned by a previous workspace tool'],
+            ],
+            'required'=>['path','snapshot_id']
+          ]
+        ]
+      ];
+    }
   }
 
 
@@ -3525,7 +3679,105 @@ function llc_last_user_text_from_messages(array $messages): string {
   return '';
 }
 
-function llc_execute_tool_call(PDO $db, array $u, array $toolCall, bool $emitStatus = true, ?array &$documentState = null, array $contextMessages = []): array {
+function llc_status_clip(string $value, int $max = 88): string {
+  $value = trim((string)(preg_replace('/\s+/u', ' ', $value) ?? $value));
+  if ($value === '' || $max < 4) return $value;
+  if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+    return mb_strlen($value, 'UTF-8') > $max ? mb_substr($value, 0, $max - 1, 'UTF-8') . '…' : $value;
+  }
+  return strlen($value) > $max ? substr($value, 0, $max - 3) . '...' : $value;
+}
+
+function llc_status_bytes(int $bytes): string {
+  if ($bytes < 1024) return $bytes . ' B';
+  if ($bytes < 1024 * 1024) return round($bytes / 1024, 1) . ' KB';
+  return round($bytes / (1024 * 1024), 1) . ' MB';
+}
+
+function llc_workspace_tool_start_status(string $name, array $args): string {
+  $path = llc_status_clip((string)($args['path'] ?? ''), 100);
+  if ($path === '') $path = '.';
+
+  if ($name === 'workspace_tree') {
+    $depth = max(1, min(12, (int)($args['depth'] ?? 4)));
+    return 'Workspace · Reading tree in ' . $path . ' (depth ' . $depth . ')';
+  }
+  if ($name === 'workspace_search') {
+    $query = llc_status_clip((string)($args['query'] ?? ''), 72);
+    $kind = !empty($args['regex']) ? 'regex' : 'text';
+    return 'Workspace · Searching ' . $kind . ' “' . $query . '” in ' . $path;
+  }
+  if ($name === 'workspace_read') {
+    $start = max(1, (int)($args['start_line'] ?? 1));
+    $end = max($start, (int)($args['end_line'] ?? ($start + 399)));
+    return 'Workspace · Reading ' . $path . ' · lines ' . $start . '–' . $end;
+  }
+  if ($name === 'workspace_write') {
+    return 'Workspace · Writing ' . $path;
+  }
+  if ($name === 'workspace_replace') {
+    $count = max(1, (int)($args['expected_replacements'] ?? 1));
+    $verb = !empty($args['dry_run']) ? 'Checking' : 'Applying';
+    return 'Workspace · ' . $verb . ' ' . $count . ' replacement' . ($count === 1 ? '' : 's') . ' in ' . $path;
+  }
+  if ($name === 'workspace_delete') {
+    return 'Workspace · Deleting ' . $path;
+  }
+  if ($name === 'workspace_restore') {
+    return 'Workspace · Restoring ' . $path . ' from snapshot';
+  }
+  return 'Workspace · Running ' . $name;
+}
+
+function llc_workspace_tool_done_status(string $name, array $args, array $res): string {
+  $path = llc_status_clip((string)($res['path'] ?? $args['path'] ?? ''), 100);
+  if ($path === '') $path = '.';
+
+  if ($name === 'workspace_tree') {
+    $files = 0; $dirs = 0;
+    foreach (($res['items'] ?? []) as $item) {
+      if (!is_array($item)) continue;
+      if (($item['type'] ?? '') === 'directory') $dirs++; else if (($item['type'] ?? '') === 'file') $files++;
+    }
+    $suffix = !empty($res['truncated']) ? ' (result truncated)' : '';
+    return 'Workspace · Found ' . $files . ' file' . ($files === 1 ? '' : 's') . ' and ' . $dirs . ' folder' . ($dirs === 1 ? '' : 's') . ' in ' . $path . $suffix;
+  }
+  if ($name === 'workspace_search') {
+    $matches = is_array($res['matches'] ?? null) ? $res['matches'] : [];
+    $count = count($matches);
+    $files = [];
+    foreach ($matches as $match) if (is_array($match) && isset($match['path'])) $files[(string)$match['path']] = true;
+    $fileCount = count($files);
+    $query = llc_status_clip((string)($res['query'] ?? $args['query'] ?? ''), 60);
+    $suffix = !empty($res['truncated']) ? ' (result truncated)' : '';
+    return 'Workspace · ' . $count . ' match' . ($count === 1 ? '' : 'es') . ' in ' . $fileCount . ' file' . ($fileCount === 1 ? '' : 's') . ' for “' . $query . '”' . $suffix;
+  }
+  if ($name === 'workspace_read') {
+    $start = (int)($res['start_line'] ?? $args['start_line'] ?? 1);
+    $end = (int)($res['end_line'] ?? $start);
+    $suffix = !empty($res['truncated']) ? ' (more available)' : '';
+    return 'Workspace · Read ' . $path . ' · lines ' . $start . '–' . $end . $suffix;
+  }
+  if ($name === 'workspace_write') {
+    $verb = !empty($res['created']) ? 'Created ' : 'Updated ';
+    $size = isset($res['size']) ? ' · ' . llc_status_bytes((int)$res['size']) : '';
+    return 'Workspace · ' . $verb . $path . $size;
+  }
+  if ($name === 'workspace_replace') {
+    $count = (int)($res['replacements'] ?? 0);
+    if (!empty($res['dry_run'])) return 'Workspace · Checked ' . $count . ' replacement' . ($count === 1 ? '' : 's') . ' in ' . $path . ' · no file changed';
+    return 'Workspace · Replaced ' . $count . ' occurrence' . ($count === 1 ? '' : 's') . ' in ' . $path;
+  }
+  if ($name === 'workspace_delete') {
+    return 'Workspace · Deleted ' . $path;
+  }
+  if ($name === 'workspace_restore') {
+    return 'Workspace · Restored ' . $path . ' from ' . llc_status_clip((string)($res['restored_from'] ?? $args['snapshot_id'] ?? 'snapshot'), 60);
+  }
+  return 'Workspace · ' . $name . ' completed';
+}
+
+function llc_execute_tool_call(PDO $db, array $u, array $toolCall, bool $emitStatus = true, ?array &$documentState = null, array $contextMessages = [], ?array $workspaceContext = null): array {
   $uid = (string)($u['id'] ?? '');
   $id = (string)($toolCall['id'] ?? '');
   if ($id === '') $id = 'toolcall_' . bin2hex(random_bytes(6));
@@ -3604,6 +3856,34 @@ $sendStatus = function(string $message, string $phase = '') use ($emitStatus) {
         'role' => 'tool',
         'tool_call_id' => $id,
         'content' => json_encode(['ok'=>true, 'tool'=>$name, 'result'=>$res], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE),
+      ];
+    }
+
+    if (str_starts_with($name, 'workspace_')) {
+      $ctx = llc_workspace_require_context($workspaceContext, in_array($name, ['workspace_write','workspace_replace','workspace_delete','workspace_restore'], true));
+      $sendStatus(llc_workspace_tool_start_status($name, $args));
+      if ($name === 'workspace_tree') {
+        $res = llc_workspace_tree_result($ctx, $args);
+      } elseif ($name === 'workspace_search') {
+        $res = llc_workspace_search_result($ctx, $args);
+      } elseif ($name === 'workspace_read') {
+        $res = llc_workspace_read_result($ctx, $args);
+      } elseif ($name === 'workspace_write') {
+        $res = llc_workspace_write_result($db, $ctx, $args);
+      } elseif ($name === 'workspace_replace') {
+        $res = llc_workspace_replace_result($db, $ctx, $args);
+      } elseif ($name === 'workspace_delete') {
+        $res = llc_workspace_delete_result($db, $ctx, $args);
+      } elseif ($name === 'workspace_restore') {
+        $res = llc_workspace_restore_result($db, $ctx, $args);
+      } else {
+        throw new RuntimeException('Unknown workspace tool: ' . $name);
+      }
+      $sendStatus(llc_workspace_tool_done_status($name, $args, $res), 'done');
+      return [
+        'role'=>'tool',
+        'tool_call_id'=>$id,
+        'content'=>json_encode($res, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE),
       ];
     }
 
@@ -3800,6 +4080,9 @@ $sendStatus = function(string $message, string $phase = '') use ($emitStatus) {
       'content' => json_encode($res, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE),
     ];
   } catch (Throwable $e) {
+    if (str_starts_with($name, 'workspace_')) {
+      $sendStatus('Workspace · Failed: ' . llc_status_clip($e->getMessage(), 140), 'error');
+    }
     $res = ['ok'=>false,'error'=>$e->getMessage()];
     return [
       'role' => 'tool',
@@ -7211,6 +7494,1026 @@ function llc_media_audio_inline_limit_mb(PDO $db): int {
   return llc_global_int_setting($db, 'media_audio_inline_limit_mb', 15, 0, 1024);
 }
 
+// ---------- managed code workspaces ----------
+function llc_workspace_safe_id(string $id): string {
+  $id = trim($id);
+  if (!preg_match('/^ws_[a-f0-9]{16}$/', $id)) throw new RuntimeException('Invalid workspace id');
+  return $id;
+}
+
+function llc_workspace_base_dir(string $workspaceId): string {
+  return llc_workspaces_dir() . '/' . llc_workspace_safe_id($workspaceId);
+}
+
+function llc_workspace_project_dir(string $workspaceId): string {
+  return llc_workspace_base_dir($workspaceId) . '/project';
+}
+
+function llc_workspace_snapshots_dir(string $workspaceId): string {
+  return llc_workspace_base_dir($workspaceId) . '/snapshots';
+}
+
+function llc_workspace_row(PDO $db, array $u, string $workspaceId): array {
+  $workspaceId = llc_workspace_safe_id($workspaceId);
+  $st = $db->prepare('SELECT id,name,created_at,updated_at FROM workspaces WHERE id=? AND user_id=? LIMIT 1');
+  $st->execute([$workspaceId, (string)$u['id']]);
+  $row = $st->fetch(PDO::FETCH_ASSOC);
+  if (!$row) throw new RuntimeException('Workspace not found');
+  return $row;
+}
+
+function llc_workspace_clean_name(string $name): string {
+  $name = trim(preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $name) ?? $name);
+  $name = preg_replace('/\s+/u', ' ', $name) ?? $name;
+  if ($name === '') $name = 'Untitled workspace';
+  if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+    if (mb_strlen($name, 'UTF-8') > 120) $name = mb_substr($name, 0, 120, 'UTF-8');
+  } elseif (strlen($name) > 120) {
+    $name = substr($name, 0, 120);
+  }
+  return $name;
+}
+
+function llc_workspace_normalize_rel(string $path, bool $allowEmpty = false): string {
+  if (str_contains($path, "\0")) throw new RuntimeException('Invalid path');
+  $path = trim(str_replace('\\', '/', $path));
+  $path = preg_replace('~/+~', '/', $path) ?? $path;
+  if ($path === '' || $path === '.') {
+    if ($allowEmpty) return '';
+    throw new RuntimeException('Missing path');
+  }
+  if (str_starts_with($path, '/') || preg_match('/^[A-Za-z]:\//', $path)) throw new RuntimeException('Absolute paths are not allowed');
+  $parts = [];
+  foreach (explode('/', $path) as $part) {
+    if ($part === '' || $part === '.') continue;
+    if ($part === '..') throw new RuntimeException('Parent path segments are not allowed');
+    if (preg_match('/[<>:"|?*\x00-\x1F]/u', $part)) throw new RuntimeException('Path contains characters that are not portable across Windows, macOS and Linux');
+    if (str_ends_with($part, '.') || str_ends_with($part, ' ')) throw new RuntimeException('Path segments may not end with a dot or space');
+    $baseUpper = strtoupper((string)preg_replace('/\..*$/', '', $part));
+    if (preg_match('/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/', $baseUpper)) throw new RuntimeException('Path uses a reserved Windows filename');
+    if (strlen($part) > 255) throw new RuntimeException('Path segment is too long');
+    $parts[] = $part;
+  }
+  $rel = implode('/', $parts);
+  if ($rel === '' && !$allowEmpty) throw new RuntimeException('Missing path');
+  if (strlen($rel) > 1200) throw new RuntimeException('Path is too long');
+  return $rel;
+}
+
+function llc_workspace_path(string $workspaceId, string $rel, bool $allowEmpty = false): string {
+  $rel = llc_workspace_normalize_rel($rel, $allowEmpty);
+  $root = llc_workspace_project_dir($workspaceId);
+  return $rel === '' ? $root : ($root . '/' . $rel);
+}
+
+function llc_workspace_assert_no_symlink_path(string $workspaceId, string $rel, bool $includeLeaf = true): void {
+  $rel = llc_workspace_normalize_rel($rel, true);
+  if ($rel === '') return;
+  $cur = llc_workspace_project_dir($workspaceId);
+  $parts = explode('/', $rel);
+  $last = count($parts) - 1;
+  foreach ($parts as $i => $part) {
+    if (!$includeLeaf && $i === $last) break;
+    $cur .= '/' . $part;
+    if (is_link($cur)) throw new RuntimeException('Symbolic links are not allowed in workspaces');
+  }
+}
+
+function llc_workspace_mkdir_parent(string $workspaceId, string $rel): void {
+  llc_workspace_assert_no_symlink_path($workspaceId, $rel, false);
+  $dir = dirname(llc_workspace_path($workspaceId, $rel));
+  if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) throw new RuntimeException('Could not create parent directory');
+  llc_workspace_assert_no_symlink_path($workspaceId, dirname($rel), true);
+}
+
+function llc_workspace_remove_tree(string $path): void {
+  if ($path === '' || !file_exists($path)) return;
+  if (is_link($path) || is_file($path)) { @unlink($path); return; }
+  $items = @scandir($path);
+  if (is_array($items)) {
+    foreach ($items as $item) {
+      if ($item === '.' || $item === '..') continue;
+      llc_workspace_remove_tree($path . '/' . $item);
+    }
+  }
+  @rmdir($path);
+}
+
+function llc_workspace_touch(PDO $db, string $workspaceId): void {
+  $st = $db->prepare('UPDATE workspaces SET updated_at=? WHERE id=?');
+  $st->execute([llc_now(), $workspaceId]);
+}
+
+function llc_workspace_file_count(string $root, int $limit = 10000): int {
+  if (!is_dir($root)) return 0;
+  $count = 0;
+  $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+  foreach ($it as $f) {
+    if ($f->isLink() || !$f->isFile()) continue;
+    $count++;
+    if ($count >= $limit) break;
+  }
+  return $count;
+}
+
+function llc_workspace_list(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  $st = $db->prepare('SELECT id,name,created_at,updated_at FROM workspaces WHERE user_id=? ORDER BY updated_at DESC, created_at DESC');
+  $st->execute([(string)$u['id']]);
+  $items = [];
+  foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+    $id = (string)$row['id'];
+    $items[] = [
+      'id'=>$id,
+      'name'=>(string)$row['name'],
+      'created_at'=>(int)$row['created_at'],
+      'updated_at'=>(int)$row['updated_at'],
+      'file_count'=>llc_workspace_file_count(llc_workspace_project_dir($id), 10000),
+    ];
+  }
+  llc_json(['ok'=>true, 'workspaces'=>$items]);
+}
+
+function llc_workspace_create(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  $j = llc_read_json();
+  $name = llc_workspace_clean_name((string)($j['name'] ?? 'Untitled workspace'));
+  $id = llc_id('ws_');
+  $base = llc_workspace_base_dir($id);
+  $project = $base . '/project';
+  $snapshots = $base . '/snapshots';
+  if (!mkdir($project, 0775, true) && !is_dir($project)) llc_json(['error'=>'Could not create workspace directory'], 500);
+  if (!mkdir($snapshots, 0775, true) && !is_dir($snapshots)) {
+    llc_workspace_remove_tree($base);
+    llc_json(['error'=>'Could not create workspace snapshot directory'], 500);
+  }
+  $now = llc_now();
+  try {
+    $st = $db->prepare('INSERT INTO workspaces(id,user_id,name,created_at,updated_at) VALUES(?,?,?,?,?)');
+    $st->execute([$id, (string)$u['id'], $name, $now, $now]);
+  } catch (Throwable $e) {
+    llc_workspace_remove_tree($base);
+    throw $e;
+  }
+  llc_json(['ok'=>true, 'workspace'=>['id'=>$id,'name'=>$name,'created_at'=>$now,'updated_at'=>$now,'file_count'=>0]]);
+}
+
+function llc_workspace_import(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  if (!class_exists('ZipArchive')) llc_json(['error'=>'ZIP support is unavailable in this PHP installation (ZipArchive missing)'], 501);
+  if (!isset($_FILES['file']) || !is_array($_FILES['file'])) llc_json(['error'=>'Missing ZIP file'], 400);
+  $f = $_FILES['file'];
+  if (($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) llc_json(['error'=>'ZIP upload failed'], 400);
+  $tmp = (string)($f['tmp_name'] ?? '');
+  $orig = (string)($f['name'] ?? 'workspace.zip');
+  $size = (int)($f['size'] ?? 0);
+  if ($size <= 0 || !is_file($tmp)) llc_json(['error'=>'Invalid ZIP upload'], 400);
+  if ($size > llc_upload_hard_limit_bytes($db)) llc_json(['error'=>'ZIP file too large'], 413);
+  if (strtolower(pathinfo($orig, PATHINFO_EXTENSION)) !== 'zip') llc_json(['error'=>'Only ZIP archives can be imported'], 400);
+
+  $name = llc_workspace_clean_name((string)($_POST['name'] ?? pathinfo($orig, PATHINFO_FILENAME)));
+  $id = llc_id('ws_');
+  $base = llc_workspace_base_dir($id);
+  $project = $base . '/project';
+  $snapshots = $base . '/snapshots';
+  if (!mkdir($project, 0775, true) && !is_dir($project)) llc_json(['error'=>'Could not create workspace directory'], 500);
+  if (!mkdir($snapshots, 0775, true) && !is_dir($snapshots)) {
+    llc_workspace_remove_tree($base);
+    llc_json(['error'=>'Could not create workspace snapshot directory'], 500);
+  }
+
+  $zip = new ZipArchive();
+  $open = $zip->open($tmp);
+  if ($open !== true) {
+    llc_workspace_remove_tree($base);
+    llc_json(['error'=>'Could not open ZIP archive'], 400);
+  }
+
+  $maxFiles = 5000;
+  $maxBytes = 200 * 1024 * 1024;
+  $entries = [];
+  $totalBytes = 0;
+  try {
+    if ($zip->numFiles > $maxFiles) throw new RuntimeException('ZIP contains too many entries (5000 max)');
+    for ($i=0; $i<$zip->numFiles; $i++) {
+      $stat = $zip->statIndex($i);
+      if (!is_array($stat)) continue;
+      $rawName = (string)($stat['name'] ?? '');
+      if ($rawName === '') continue;
+      $isDir = str_ends_with(str_replace('\\','/',$rawName), '/');
+      $rel = llc_workspace_normalize_rel($rawName, true);
+      if ($rel === '') continue;
+      $entrySize = max(0, (int)($stat['size'] ?? 0));
+      $totalBytes += $entrySize;
+      if ($totalBytes > $maxBytes) throw new RuntimeException('ZIP expands beyond the 200 MB workspace limit');
+      $entries[] = ['index'=>$i,'name'=>$rawName,'path'=>$rel,'dir'=>$isDir,'size'=>$entrySize];
+    }
+
+    // Strip one common top-level directory, as produced by most project ZIP exports.
+    $top = null;
+    $canStrip = !empty($entries);
+    $hasNestedEntry = false;
+    foreach ($entries as $e) {
+      $parts = explode('/', (string)$e['path']);
+      if (count($parts) >= 2) $hasNestedEntry = true;
+      if ($top === null) $top = $parts[0];
+      elseif ($top !== $parts[0]) { $canStrip = false; break; }
+    }
+    $canStrip = $canStrip && $hasNestedEntry;
+    if ($canStrip && is_string($top) && $top !== '') {
+      foreach ($entries as &$e) $e['path'] = substr((string)$e['path'], strlen($top) + 1);
+      unset($e);
+    }
+
+    $written = 0;
+    $actualBytes = 0;
+    foreach ($entries as $e) {
+      $rel = llc_workspace_normalize_rel((string)$e['path'], true);
+      if ($rel === '') continue;
+      $dest = llc_workspace_path($id, $rel);
+      if (!empty($e['dir'])) {
+        if (!is_dir($dest) && !mkdir($dest, 0775, true) && !is_dir($dest)) throw new RuntimeException('Could not create directory: ' . $rel);
+        continue;
+      }
+      llc_workspace_mkdir_parent($id, $rel);
+      $in = $zip->getStream((string)$e['name']);
+      if (!is_resource($in)) throw new RuntimeException('Could not read ZIP entry: ' . $rel);
+      $out = @fopen($dest, 'wb');
+      if (!is_resource($out)) { fclose($in); throw new RuntimeException('Could not create file: ' . $rel); }
+      $copied = stream_copy_to_stream($in, $out, ($maxBytes - $actualBytes) + 1);
+      fclose($in); fclose($out);
+      if ($copied === false) throw new RuntimeException('Could not extract file: ' . $rel);
+      $actualBytes += (int)$copied;
+      if ($actualBytes > $maxBytes) throw new RuntimeException('ZIP expands beyond the 200 MB workspace limit');
+      $written++;
+    }
+    $zip->close();
+
+    $now = llc_now();
+    $st = $db->prepare('INSERT INTO workspaces(id,user_id,name,created_at,updated_at) VALUES(?,?,?,?,?)');
+    $st->execute([$id, (string)$u['id'], $name, $now, $now]);
+    llc_json(['ok'=>true, 'workspace'=>['id'=>$id,'name'=>$name,'created_at'=>$now,'updated_at'=>$now,'file_count'=>$written]]);
+  } catch (Throwable $e) {
+    try { @$zip->close(); } catch (Throwable $_) { /* already closed */ }
+    llc_workspace_remove_tree($base);
+    llc_json(['error'=>$e->getMessage()], 400);
+  }
+}
+
+function llc_workspace_rename(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  $j = llc_read_json();
+  $id = (string)($j['id'] ?? '');
+  llc_workspace_row($db, $u, $id);
+  $name = llc_workspace_clean_name((string)($j['name'] ?? ''));
+  $now = llc_now();
+  $st = $db->prepare('UPDATE workspaces SET name=?, updated_at=? WHERE id=? AND user_id=?');
+  $st->execute([$name, $now, $id, (string)$u['id']]);
+  llc_json(['ok'=>true, 'workspace'=>['id'=>$id,'name'=>$name,'updated_at'=>$now,'file_count'=>llc_workspace_file_count(llc_workspace_project_dir($id), 10000)]]);
+}
+
+function llc_workspace_files(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  $id = (string)($_GET['id'] ?? '');
+  $row = llc_workspace_row($db, $u, $id);
+  $root = llc_workspace_project_dir($id);
+  $items = [];
+  $maxEntries = 5000;
+  if (is_dir($root)) {
+    $it = new RecursiveIteratorIterator(
+      new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+      RecursiveIteratorIterator::SELF_FIRST
+    );
+    $rootNorm = rtrim(str_replace('\\','/',$root), '/');
+    foreach ($it as $f) {
+      if ($f->isLink()) continue;
+      $abs = str_replace('\\','/',$f->getPathname());
+      $rel = str_starts_with($abs, $rootNorm . '/') ? substr($abs, strlen($rootNorm) + 1) : $f->getFilename();
+      $rel = llc_workspace_normalize_rel($rel, true);
+      if ($rel === '') continue;
+      if ($f->isDir()) {
+        $items[] = ['path'=>$rel,'type'=>'directory'];
+      } elseif ($f->isFile()) {
+        $items[] = [
+          'path'=>$rel,
+          'type'=>'file',
+          'size'=>(int)($f->getSize() ?: 0),
+          'modified_at'=>(int)($f->getMTime() ?: 0),
+        ];
+      }
+      if (count($items) >= $maxEntries) break;
+    }
+  }
+  usort($items, static function(array $a, array $b): int {
+    if (($a['type'] ?? '') !== ($b['type'] ?? '')) return ($a['type'] ?? '') === 'directory' ? -1 : 1;
+    return strnatcasecmp((string)($a['path'] ?? ''), (string)($b['path'] ?? ''));
+  });
+  llc_json([
+    'ok'=>true,
+    'workspace'=>['id'=>(string)$row['id'],'name'=>(string)$row['name']],
+    'items'=>$items,
+    'truncated'=>count($items) >= $maxEntries,
+  ]);
+}
+
+function llc_workspace_file_create(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  $j = llc_read_json();
+  $id = (string)($j['id'] ?? '');
+  $row = llc_workspace_row($db, $u, $id);
+  $rel = llc_workspace_normalize_rel((string)($j['path'] ?? ''));
+  llc_workspace_assert_no_symlink_path($id, $rel, true);
+  $file = llc_workspace_path($id, $rel);
+  if (file_exists($file)) throw new RuntimeException('A file or directory already exists at that path');
+  $ctx = ['id'=>$id,'name'=>(string)$row['name'],'access'=>'write','root'=>llc_workspace_project_dir($id)];
+  $meta = llc_workspace_write_file($ctx, $rel, (string)($j['content'] ?? ''));
+  llc_workspace_touch($db, $id);
+  llc_json(['ok'=>true,'path'=>$rel,'created'=>true] + $meta);
+}
+
+function llc_workspace_uploaded_files(string $field): array {
+  if (!isset($_FILES[$field]) || !is_array($_FILES[$field])) return [];
+  $src = $_FILES[$field];
+  $names = $src['name'] ?? [];
+  if (!is_array($names)) {
+    return [[
+      'name'=>(string)($src['name'] ?? ''),
+      'tmp_name'=>(string)($src['tmp_name'] ?? ''),
+      'error'=>(int)($src['error'] ?? UPLOAD_ERR_NO_FILE),
+      'size'=>(int)($src['size'] ?? 0),
+    ]];
+  }
+  $out = [];
+  foreach ($names as $i=>$name) {
+    $out[] = [
+      'name'=>(string)$name,
+      'tmp_name'=>(string)($src['tmp_name'][$i] ?? ''),
+      'error'=>(int)($src['error'][$i] ?? UPLOAD_ERR_NO_FILE),
+      'size'=>(int)($src['size'][$i] ?? 0),
+    ];
+  }
+  return $out;
+}
+
+function llc_workspace_zip_entry_is_symlink(ZipArchive $zip, int $index): bool {
+  if (!method_exists($zip, 'getExternalAttributesIndex')) return false;
+  $opsys = 0;
+  $attr = 0;
+  if (!$zip->getExternalAttributesIndex($index, $opsys, $attr)) return false;
+  // Unix file type bits live in the upper 16 bits. 0120000 denotes a symlink.
+  return (((int)$attr >> 16) & 0170000) === 0120000;
+}
+
+function llc_workspace_zip_entries(ZipArchive $zip): array {
+  $entries = [];
+  for ($i=0; $i<$zip->numFiles; $i++) {
+    $stat = $zip->statIndex($i);
+    if (!is_array($stat)) continue;
+    $rawName = (string)($stat['name'] ?? '');
+    if ($rawName === '') continue;
+    if (llc_workspace_zip_entry_is_symlink($zip, $i)) throw new RuntimeException('ZIP archives containing symbolic links are not allowed');
+    $normalizedRaw = str_replace('\\','/',$rawName);
+    $isDir = str_ends_with($normalizedRaw, '/');
+    $rel = llc_workspace_normalize_rel($normalizedRaw, true);
+    if ($rel === '') continue;
+    $entries[] = [
+      'index'=>$i,
+      'name'=>$rawName,
+      'path'=>$rel,
+      'dir'=>$isDir,
+      'size'=>max(0, (int)($stat['size'] ?? 0)),
+    ];
+  }
+
+  // Most project archives contain one wrapper directory. Strip it just as the
+  // initial workspace ZIP importer does, so adding project.zip does not create
+  // project/project-files unless the archive actually has multiple roots.
+  $top = null;
+  $canStrip = !empty($entries);
+  $hasNestedEntry = false;
+  foreach ($entries as $e) {
+    $parts = explode('/', (string)$e['path']);
+    if (count($parts) >= 2) $hasNestedEntry = true;
+    if ($top === null) $top = $parts[0];
+    elseif ($top !== $parts[0]) { $canStrip = false; break; }
+  }
+  $canStrip = $canStrip && $hasNestedEntry;
+  if ($canStrip && is_string($top) && $top !== '') {
+    foreach ($entries as &$e) $e['path'] = substr((string)$e['path'], strlen($top) + 1);
+    unset($e);
+  }
+  return $entries;
+}
+
+function llc_workspace_file_upload(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  $id = (string)($_POST['id'] ?? '');
+  $row = llc_workspace_row($db, $u, $id);
+  $targetDir = llc_workspace_normalize_rel((string)($_POST['target_dir'] ?? ''), true);
+  $replace = !empty($_POST['replace']);
+  $files = llc_workspace_uploaded_files('files');
+  if (!$files) llc_json(['error'=>'No files selected'], 400);
+  if (count($files) > 200) llc_json(['error'=>'Too many files selected (200 max)'], 400);
+
+  $hardLimit = llc_upload_hard_limit_bytes($db);
+  $maxEntries = 5000;
+  $maxExpandedBytes = 200 * 1024 * 1024;
+  $uploadedBytes = 0;
+  $plannedBytes = 0;
+  $archives = [];
+  $plan = [];
+  $plannedPaths = [];
+  $plannedDirs = [];
+  $archiveCount = 0;
+
+  $joinTarget = static function(string $base, string $rel): string {
+    return ltrim(($base !== '' ? $base . '/' : '') . $rel, '/');
+  };
+  $claimFile = static function(string $rel) use (&$plannedPaths, &$plannedDirs): void {
+    $key = strtolower($rel);
+    if (isset($plannedPaths[$key]) || isset($plannedDirs[$key])) throw new RuntimeException('Two selected items have the same destination: ' . $rel);
+    foreach ($plannedDirs as $dirKey=>$dirPath) {
+      if (str_starts_with($dirKey, $key . '/')) throw new RuntimeException('A file conflicts with a directory destination: ' . $dirPath);
+    }
+    $plannedPaths[$key] = $rel;
+    $parts = explode('/', $rel);
+    array_pop($parts);
+    $cur = '';
+    foreach ($parts as $part) {
+      $cur = $cur === '' ? $part : ($cur . '/' . $part);
+      $dirKey = strtolower($cur);
+      if (isset($plannedPaths[$dirKey])) throw new RuntimeException('A file conflicts with a directory destination: ' . $cur);
+      $plannedDirs[$dirKey] = $cur;
+    }
+  };
+  $claimDir = static function(string $rel) use (&$plannedPaths, &$plannedDirs): void {
+    if ($rel === '') return;
+    $parts = explode('/', $rel);
+    $cur = '';
+    foreach ($parts as $part) {
+      $cur = $cur === '' ? $part : ($cur . '/' . $part);
+      $key = strtolower($cur);
+      if (isset($plannedPaths[$key])) throw new RuntimeException('A directory conflicts with a file destination: ' . $cur);
+      $plannedDirs[$key] = $cur;
+    }
+  };
+
+  try {
+    foreach ($files as $fileIndex=>$f) {
+      if ((int)$f['error'] !== UPLOAD_ERR_OK) throw new RuntimeException('One of the uploads failed');
+      $tmp = (string)$f['tmp_name'];
+      $name = (string)$f['name'];
+      $size = (int)$f['size'];
+      if ($size < 0 || $size > $hardLimit || !is_uploaded_file($tmp)) throw new RuntimeException('Invalid or oversized uploaded file');
+      $uploadedBytes += $size;
+      if ($uploadedBytes > $maxExpandedBytes) throw new RuntimeException('Uploads exceed the 200 MB workspace limit');
+
+      $isZip = strtolower(pathinfo($name, PATHINFO_EXTENSION)) === 'zip';
+      if (!$isZip) {
+        $baseName = llc_workspace_normalize_rel(basename(str_replace('\\','/',$name)));
+        $rel = $joinTarget($targetDir, $baseName);
+        $claimFile($rel);
+        $plannedBytes += $size;
+        if ($plannedBytes > $maxExpandedBytes) throw new RuntimeException('Uploads exceed the 200 MB workspace limit');
+        $plan[] = ['kind'=>'upload','tmp'=>$tmp,'path'=>$rel,'size'=>$size];
+        continue;
+      }
+
+      if (!class_exists('ZipArchive')) throw new RuntimeException('ZIP support is unavailable in this PHP installation (ZipArchive missing)');
+      $zip = new ZipArchive();
+      $opened = $zip->open($tmp);
+      if ($opened !== true) throw new RuntimeException('Could not open ZIP archive: ' . $name);
+      $archiveIndex = count($archives);
+      $archives[] = $zip;
+      $archiveCount++;
+      $entries = llc_workspace_zip_entries($zip);
+      foreach ($entries as $entry) {
+        $entryPath = llc_workspace_normalize_rel((string)$entry['path'], true);
+        if ($entryPath === '') continue;
+        $rel = $joinTarget($targetDir, $entryPath);
+        if (!empty($entry['dir'])) {
+          $claimDir($rel);
+          $plan[] = ['kind'=>'dir','path'=>$rel];
+          continue;
+        }
+        $claimFile($rel);
+        $entrySize = max(0, (int)($entry['size'] ?? 0));
+        $plannedBytes += $entrySize;
+        if ($plannedBytes > $maxExpandedBytes) throw new RuntimeException('ZIP contents expand beyond the 200 MB workspace limit');
+        $plan[] = [
+          'kind'=>'zip',
+          'archive'=>$archiveIndex,
+          'entry_name'=>(string)$entry['name'],
+          'path'=>$rel,
+          'size'=>$entrySize,
+        ];
+      }
+      if (count($plan) > $maxEntries) throw new RuntimeException('Selected archives contain too many entries (5000 max)');
+    }
+
+    // Validate all destinations before changing the workspace.
+    foreach ($plannedDirs as $dirPath) {
+      llc_workspace_assert_no_symlink_path($id, $dirPath, true);
+      $dest = llc_workspace_path($id, $dirPath);
+      if (file_exists($dest) && !is_dir($dest)) throw new RuntimeException('Directory destination is occupied by a file: ' . $dirPath);
+    }
+    foreach ($plan as $item) {
+      if (($item['kind'] ?? '') === 'dir') continue;
+      $rel = (string)$item['path'];
+      llc_workspace_assert_no_symlink_path($id, $rel, true);
+      $dest = llc_workspace_path($id, $rel);
+      if (file_exists($dest) && !is_file($dest)) throw new RuntimeException('Upload destination is not a regular file: ' . $rel);
+      if (is_file($dest) && !$replace) throw new RuntimeException('File already exists: ' . $rel);
+    }
+
+    $written = [];
+    $actualBytes = 0;
+    $ctx = ['id'=>$id,'name'=>(string)$row['name'],'access'=>'write','root'=>llc_workspace_project_dir($id)];
+    foreach ($plan as $item) {
+      $kind = (string)($item['kind'] ?? '');
+      $rel = (string)($item['path'] ?? '');
+      if ($rel === '') continue;
+      if ($kind === 'dir') {
+        llc_workspace_assert_no_symlink_path($id, $rel, true);
+        $destDir = llc_workspace_path($id, $rel);
+        if (!is_dir($destDir) && !mkdir($destDir, 0775, true) && !is_dir($destDir)) throw new RuntimeException('Could not create directory: ' . $rel);
+        continue;
+      }
+
+      llc_workspace_mkdir_parent($id, $rel);
+      $dest = llc_workspace_path($id, $rel);
+      $snapshotId = is_file($dest) ? llc_workspace_snapshot_file($ctx, $rel) : null;
+      $tempDest = $dest . '.llc_upload_' . bin2hex(random_bytes(4));
+      $out = @fopen($tempDest, 'wb');
+      if (!is_resource($out)) throw new RuntimeException('Could not write uploaded file: ' . $rel);
+      $in = null;
+      try {
+        if ($kind === 'upload') {
+          $in = @fopen((string)$item['tmp'], 'rb');
+        } elseif ($kind === 'zip') {
+          $zip = $archives[(int)$item['archive']] ?? null;
+          if (!$zip instanceof ZipArchive) throw new RuntimeException('ZIP archive is no longer available');
+          $in = $zip->getStream((string)$item['entry_name']);
+        }
+        if (!is_resource($in)) throw new RuntimeException('Could not read uploaded content: ' . $rel);
+        $copied = stream_copy_to_stream($in, $out, ($maxExpandedBytes - $actualBytes) + 1);
+        if ($copied === false) throw new RuntimeException('Could not copy uploaded content: ' . $rel);
+        $actualBytes += (int)$copied;
+        if ($actualBytes > $maxExpandedBytes) throw new RuntimeException('Uploaded content exceeds the 200 MB workspace limit');
+      } finally {
+        if (is_resource($in)) fclose($in);
+        fclose($out);
+      }
+      if (!@rename($tempDest, $dest)) {
+        if (is_file($dest) && !@unlink($dest)) { @unlink($tempDest); throw new RuntimeException('Could not replace uploaded file: ' . $rel); }
+        if (!@rename($tempDest, $dest)) { @unlink($tempDest); throw new RuntimeException('Could not finalize uploaded file: ' . $rel); }
+      }
+      $written[] = ['path'=>$rel,'size'=>(int)(@filesize($dest) ?: 0),'snapshot_id'=>$snapshotId];
+    }
+
+    foreach ($archives as $zip) { try { $zip->close(); } catch (Throwable $_) {} }
+    llc_workspace_touch($db, $id);
+    llc_json(['ok'=>true,'files'=>$written,'count'=>count($written),'archives'=>$archiveCount]);
+  } catch (Throwable $e) {
+    foreach ($archives as $zip) { try { $zip->close(); } catch (Throwable $_) {} }
+    llc_json(['error'=>$e->getMessage()], 400);
+  }
+}
+
+function llc_download_filename_headers(string $filename): void {
+  $filename = trim(str_replace(["\r","\n"], '', $filename));
+  if ($filename === '') $filename = 'download';
+  $fallback = preg_replace('/[^A-Za-z0-9._-]+/', '_', $filename) ?: 'download';
+  header('Content-Disposition: attachment; filename="' . $fallback . '"; filename*=UTF-8\'\'' . rawurlencode($filename));
+}
+
+function llc_workspace_prune_empty_parents(string $workspaceId, string $rel): void {
+  $root = rtrim(llc_workspace_project_dir($workspaceId), '/\\');
+  $dir = dirname(llc_workspace_path($workspaceId, $rel));
+  while ($dir !== $root && str_starts_with(str_replace('\\','/',$dir) . '/', str_replace('\\','/',$root) . '/')) {
+    if (is_link($dir) || !is_dir($dir)) break;
+    $items = @scandir($dir);
+    if (!is_array($items) || count(array_diff($items, ['.','..'])) > 0) break;
+    if (!@rmdir($dir)) break;
+    $dir = dirname($dir);
+  }
+}
+
+function llc_workspace_file_delete(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  $j = llc_read_json();
+  $id = (string)($j['id'] ?? '');
+  $row = llc_workspace_row($db, $u, $id);
+  $rel = llc_workspace_normalize_rel((string)($j['path'] ?? ''));
+  llc_workspace_assert_no_symlink_path($id, $rel, true);
+  $file = llc_workspace_path($id, $rel);
+  if (!is_file($file)) llc_json(['error'=>'File not found'], 404);
+  $ctx = ['id'=>$id,'name'=>(string)$row['name'],'access'=>'write','root'=>llc_workspace_project_dir($id)];
+  $snapshotId = llc_workspace_snapshot_file($ctx, $rel);
+  if (!@unlink($file)) throw new RuntimeException('Could not delete file');
+  llc_workspace_prune_empty_parents($id, $rel);
+  llc_workspace_touch($db, $id);
+  llc_json(['ok'=>true,'path'=>$rel,'deleted'=>true,'snapshot_id'=>$snapshotId]);
+}
+
+function llc_workspace_file_download(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  $id = (string)($_GET['id'] ?? '');
+  llc_workspace_row($db, $u, $id);
+  $rel = llc_workspace_normalize_rel((string)($_GET['path'] ?? ''));
+  llc_workspace_assert_no_symlink_path($id, $rel, true);
+  $file = llc_workspace_path($id, $rel);
+  if (!is_file($file)) llc_json(['error'=>'File not found'], 404);
+  $mime = function_exists('mime_content_type') ? (string)(@mime_content_type($file) ?: '') : '';
+  header('Content-Type: ' . ($mime !== '' ? $mime : 'application/octet-stream'));
+  header('Content-Length: ' . (string)((int)(@filesize($file) ?: 0)));
+  header('Cache-Control: private, no-store');
+  llc_download_filename_headers(basename($rel));
+  readfile($file);
+  exit;
+}
+
+function llc_workspace_export(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  $id = (string)($_GET['id'] ?? '');
+  $row = llc_workspace_row($db, $u, $id);
+  if (!class_exists('ZipArchive')) llc_json(['error'=>'ZIP export is unavailable in this PHP installation (ZipArchive missing)'], 501);
+  $tmpDir = llc_tmp_dir();
+  if (!is_dir($tmpDir) && !mkdir($tmpDir, 0775, true) && !is_dir($tmpDir)) throw new RuntimeException('Could not create temporary export directory');
+  $zipPath = $tmpDir . '/workspace_' . bin2hex(random_bytes(8)) . '.zip';
+  $zip = new ZipArchive();
+  if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) throw new RuntimeException('Could not create workspace ZIP');
+  $root = llc_workspace_project_dir($id);
+  $rootNorm = rtrim(str_replace('\\','/',$root), '/');
+  $added = 0;
+  try {
+    if (is_dir($root)) {
+      $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::SELF_FIRST
+      );
+      foreach ($it as $f) {
+        if ($f->isLink()) continue;
+        $abs = str_replace('\\','/',$f->getPathname());
+        $rel = str_starts_with($abs, $rootNorm . '/') ? substr($abs, strlen($rootNorm) + 1) : $f->getFilename();
+        $rel = llc_workspace_normalize_rel($rel, true);
+        if ($rel === '') continue;
+        if ($f->isDir()) $zip->addEmptyDir($rel);
+        elseif ($f->isFile()) { if (!$zip->addFile($f->getPathname(), $rel)) throw new RuntimeException('Could not add file to ZIP: ' . $rel); $added++; }
+      }
+    }
+    if (!$zip->close()) throw new RuntimeException('Could not finalize workspace ZIP');
+  } catch (Throwable $e) {
+    try { @$zip->close(); } catch (Throwable $_) {}
+    @unlink($zipPath);
+    throw $e;
+  }
+  $name = llc_workspace_clean_name((string)$row['name']);
+  header('Content-Type: application/zip');
+  header('Content-Length: ' . (string)((int)(@filesize($zipPath) ?: 0)));
+  header('Cache-Control: private, no-store');
+  llc_download_filename_headers($name . '.zip');
+  readfile($zipPath);
+  @unlink($zipPath);
+  exit;
+}
+
+function llc_workspace_delete(): void {
+  $db = llc_db();
+  $u = llc_require_user($db);
+  $j = llc_read_json();
+  $id = (string)($j['id'] ?? '');
+  llc_workspace_row($db, $u, $id);
+  $st = $db->prepare('DELETE FROM workspaces WHERE id=? AND user_id=?');
+  $st->execute([$id, (string)$u['id']]);
+  llc_workspace_remove_tree(llc_workspace_base_dir($id));
+  llc_json(['ok'=>true, 'id'=>$id]);
+}
+
+function llc_workspace_context_from_request(PDO $db, array $u, array $j): ?array {
+  if (empty($j['webtools']['code_workspace'])) return null;
+  $w = (isset($j['workspace']) && is_array($j['workspace'])) ? $j['workspace'] : [];
+  $id = trim((string)($w['id'] ?? $j['webtools']['workspace_id'] ?? ''));
+  if ($id === '') return null;
+  $row = llc_workspace_row($db, $u, $id);
+  $access = strtolower(trim((string)($w['access'] ?? $j['webtools']['workspace_access'] ?? 'read')));
+  if (!in_array($access, ['read','write'], true)) $access = 'read';
+  $strategy = strtolower(trim((string)($w['strategy'] ?? $j['webtools']['workspace_strategy'] ?? 'efficient')));
+  if (!in_array($strategy, ['standard','efficient'], true)) $strategy = 'efficient';
+  return [
+    'id'=>(string)$row['id'],
+    'name'=>(string)$row['name'],
+    'access'=>$access,
+    'strategy'=>$strategy,
+    'root'=>llc_workspace_project_dir((string)$row['id']),
+  ];
+}
+
+function llc_workspace_require_context(?array $ctx, bool $write = false): array {
+  if (!$ctx || empty($ctx['id'])) throw new RuntimeException('No active code workspace');
+  if ($write && (($ctx['access'] ?? 'read') !== 'write')) throw new RuntimeException('Workspace is read-only for this chat');
+  return $ctx;
+}
+
+function llc_workspace_is_binary(string $path): bool {
+  $h = @fopen($path, 'rb');
+  if (!is_resource($h)) return false;
+  $sample = fread($h, 4096);
+  fclose($h);
+  return is_string($sample) && str_contains($sample, "\0");
+}
+
+function llc_workspace_glob_match(string $pattern, string $path): bool {
+  $pattern = trim(str_replace('\\','/',$pattern));
+  if ($pattern === '') return true;
+  $target = str_contains($pattern, '/') ? $path : basename($path);
+  $rx = preg_quote($pattern, '~');
+  $rx = str_replace(['\\*\\*','\\*','\\?'], ['.*','[^/]*','[^/]'], $rx);
+  return (bool)preg_match('~^' . $rx . '$~i', $target);
+}
+
+function llc_workspace_is_ignored_dir(string $name): bool {
+  return in_array(strtolower($name), ['.git','node_modules','vendor','.cache','__pycache__','.venv','venv'], true);
+}
+
+function llc_workspace_tree_result(array $ctx, array $args): array {
+  $ctx = llc_workspace_require_context($ctx, false);
+  $workspaceId = (string)$ctx['id'];
+  $rel = llc_workspace_normalize_rel((string)($args['path'] ?? ''), true);
+  $depth = max(1, min(12, (int)($args['depth'] ?? 4)));
+  $maxEntries = max(1, min(1000, (int)($args['max_entries'] ?? 300)));
+  $includeIgnored = !empty($args['include_ignored']);
+  $start = llc_workspace_path($workspaceId, $rel, true);
+  llc_workspace_assert_no_symlink_path($workspaceId, $rel, true);
+  if (!is_dir($start)) throw new RuntimeException('Directory not found: ' . ($rel ?: '.'));
+  $items = [];
+  $walk = function(string $dir, string $baseRel, int $level) use (&$walk, &$items, $depth, $maxEntries, $includeIgnored): void {
+    if ($level > $depth || count($items) >= $maxEntries) return;
+    $names = @scandir($dir);
+    if (!is_array($names)) return;
+    $dirs = []; $files = [];
+    foreach ($names as $name) {
+      if ($name === '.' || $name === '..') continue;
+      $abs = $dir . '/' . $name;
+      if (is_link($abs)) continue;
+      if (is_dir($abs)) {
+        if (!$includeIgnored && llc_workspace_is_ignored_dir($name)) continue;
+        $dirs[] = $name;
+      } else if (is_file($abs)) $files[] = $name;
+    }
+    natcasesort($dirs); natcasesort($files);
+    foreach (array_merge($dirs, $files) as $name) {
+      if (count($items) >= $maxEntries) return;
+      $abs = $dir . '/' . $name;
+      $itemRel = ltrim($baseRel . '/' . $name, '/');
+      if (is_dir($abs)) {
+        $items[] = ['path'=>$itemRel,'type'=>'directory'];
+        $walk($abs, $itemRel, $level + 1);
+      } else {
+        $items[] = ['path'=>$itemRel,'type'=>'file','size'=>(int)(@filesize($abs) ?: 0)];
+      }
+    }
+  };
+  $walk($start, $rel, 1);
+  return ['ok'=>true,'workspace'=>['id'=>$ctx['id'],'name'=>$ctx['name'],'access'=>$ctx['access']], 'path'=>$rel, 'items'=>$items, 'truncated'=>count($items) >= $maxEntries];
+}
+
+function llc_workspace_search_result(array $ctx, array $args): array {
+  $ctx = llc_workspace_require_context($ctx, false);
+  $workspaceId = (string)$ctx['id'];
+  $query = (string)($args['query'] ?? '');
+  if ($query === '') throw new RuntimeException('workspace_search: missing query');
+  $rel = llc_workspace_normalize_rel((string)($args['path'] ?? ''), true);
+  $regex = !empty($args['regex']);
+  $caseSensitive = !empty($args['case_sensitive']);
+  $include = trim((string)($args['include'] ?? ''));
+  $maxMatches = max(1, min(300, (int)($args['max_matches'] ?? 80)));
+  $includeIgnored = !empty($args['include_ignored']);
+  $root = llc_workspace_path($workspaceId, $rel, true);
+  llc_workspace_assert_no_symlink_path($workspaceId, $rel, true);
+  if (!is_dir($root) && !is_file($root)) throw new RuntimeException('Search path not found');
+  $pattern = null;
+  if ($regex) {
+    $flags = 'u' . ($caseSensitive ? '' : 'i');
+    $pattern = '~' . str_replace('~', '\\~', $query) . '~' . $flags;
+    if (@preg_match($pattern, '') === false) throw new RuntimeException('Invalid regular expression');
+  }
+  $matches = [];
+  $scanFile = function(string $file, string $fileRel) use (&$matches, $maxMatches, $query, $regex, $caseSensitive, $pattern, $include): void {
+    if (count($matches) >= $maxMatches) return;
+    if ($include !== '' && !llc_workspace_glob_match($include, $fileRel)) return;
+    $size = (int)(@filesize($file) ?: 0);
+    if ($size > 5 * 1024 * 1024 || llc_workspace_is_binary($file)) return;
+    $h = @fopen($file, 'rb');
+    if (!is_resource($h)) return;
+    $lineNo = 0;
+    while (($line = fgets($h)) !== false) {
+      $lineNo++;
+      $hit = $regex ? (bool)preg_match($pattern, $line) : ($caseSensitive ? str_contains($line, $query) : stripos($line, $query) !== false);
+      if (!$hit) continue;
+      $snippet = rtrim($line, "\r\n");
+      if (strlen($snippet) > 1200) $snippet = substr($snippet, 0, 1200) . '…';
+      $matches[] = ['path'=>$fileRel,'line'=>$lineNo,'text'=>$snippet];
+      if (count($matches) >= $maxMatches) break;
+    }
+    fclose($h);
+  };
+  if (is_file($root)) {
+    $scanFile($root, $rel);
+  } else {
+    $dirIt = new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS);
+    $filterIt = new RecursiveCallbackFilterIterator($dirIt, function($current) use ($includeIgnored) {
+      if ($current->isLink()) return false;
+      if ($current->isDir() && !$includeIgnored && llc_workspace_is_ignored_dir($current->getFilename())) return false;
+      return true;
+    });
+    $it = new RecursiveIteratorIterator($filterIt);
+    $rootNorm = rtrim(str_replace('\\','/',$root), '/');
+    foreach ($it as $f) {
+      if (count($matches) >= $maxMatches) break;
+      if ($f->isLink() || !$f->isFile()) continue;
+      $abs = $f->getPathname();
+      $absNorm = str_replace('\\','/',$abs);
+      $subPath = str_starts_with($absNorm, $rootNorm . '/') ? substr($absNorm, strlen($rootNorm) + 1) : basename($absNorm);
+      $fileRel = ltrim($rel . '/' . $subPath, '/');
+      $scanFile($abs, $fileRel);
+    }
+  }
+  return ['ok'=>true,'query'=>$query,'regex'=>$regex,'matches'=>$matches,'truncated'=>count($matches) >= $maxMatches];
+}
+
+function llc_workspace_read_result(array $ctx, array $args): array {
+  $ctx = llc_workspace_require_context($ctx, false);
+  $workspaceId = (string)$ctx['id'];
+  $rel = llc_workspace_normalize_rel((string)($args['path'] ?? ''));
+  llc_workspace_assert_no_symlink_path($workspaceId, $rel, true);
+  $file = llc_workspace_path($workspaceId, $rel);
+  if (!is_file($file)) throw new RuntimeException('File not found: ' . $rel);
+  if (llc_workspace_is_binary($file)) throw new RuntimeException('Binary files cannot be read as text');
+  $size = (int)(@filesize($file) ?: 0);
+  if ($size > 5 * 1024 * 1024) throw new RuntimeException('File is too large to read (5 MB max)');
+  $start = max(1, (int)($args['start_line'] ?? 1));
+  $end = max($start, (int)($args['end_line'] ?? ($start + 399)));
+  if (($end - $start + 1) > 1000) $end = $start + 999;
+  $h = @fopen($file, 'rb');
+  if (!is_resource($h)) throw new RuntimeException('Could not read file');
+  $lineNo = 0; $lastReturned = 0; $out = []; $outBytes = 0; $truncated = false;
+  while (($line = fgets($h)) !== false) {
+    $lineNo++;
+    if ($lineNo < $start) continue;
+    if ($lineNo > $end) { $truncated = true; break; }
+    $line = rtrim($line, "\r\n");
+    if (strlen($line) > 12000) $line = substr($line, 0, 12000) . '…';
+    $rendered = $lineNo . ': ' . $line;
+    $out[] = $rendered;
+    $outBytes += strlen($rendered) + 1;
+    $lastReturned = $lineNo;
+    if ($outBytes > 120000) { $truncated = true; break; }
+  }
+  fclose($h);
+  return ['ok'=>true,'path'=>$rel,'start_line'=>$start,'end_line'=>$lastReturned,'sha256'=>hash_file('sha256',$file),'size'=>$size,'content'=>implode("\n",$out),'truncated'=>$truncated];
+}
+
+function llc_workspace_prune_snapshots(string $workspaceId, int $keep = 100): void {
+  $dir = llc_workspace_snapshots_dir($workspaceId);
+  $items = @scandir($dir);
+  if (!is_array($items)) return;
+  $snaps = [];
+  foreach ($items as $item) {
+    if (str_starts_with($item, 'snap_') && is_dir($dir . '/' . $item) && !is_link($dir . '/' . $item)) $snaps[] = $item;
+  }
+  rsort($snaps, SORT_STRING);
+  foreach (array_slice($snaps, max(1, $keep)) as $old) llc_workspace_remove_tree($dir . '/' . $old);
+}
+
+function llc_workspace_snapshot_file(array $ctx, string $rel): ?string {
+  $workspaceId = (string)$ctx['id'];
+  $file = llc_workspace_path($workspaceId, $rel);
+  if (!is_file($file)) return null;
+  $snapId = 'snap_' . gmdate('Ymd_His') . '_' . bin2hex(random_bytes(4));
+  $dest = llc_workspace_snapshots_dir($workspaceId) . '/' . $snapId . '/' . $rel;
+  $dir = dirname($dest);
+  if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) throw new RuntimeException('Could not create workspace snapshot');
+  if (!copy($file, $dest)) throw new RuntimeException('Could not create workspace snapshot');
+  llc_workspace_prune_snapshots($workspaceId, 100);
+  return $snapId;
+}
+
+function llc_workspace_write_file(array $ctx, string $rel, string $content): array {
+  $workspaceId = (string)$ctx['id'];
+  if (strlen($content) > 5 * 1024 * 1024) throw new RuntimeException('Content exceeds the 5 MB file limit');
+  llc_workspace_mkdir_parent($workspaceId, $rel);
+  $file = llc_workspace_path($workspaceId, $rel);
+  $tmp = $file . '.llc_tmp_' . bin2hex(random_bytes(4));
+  if (file_put_contents($tmp, $content, LOCK_EX) === false) throw new RuntimeException('Could not write temporary file');
+  if (!@rename($tmp, $file)) {
+    if (is_file($file) && !@unlink($file)) { @unlink($tmp); throw new RuntimeException('Could not replace file'); }
+    if (!@rename($tmp, $file)) { @unlink($tmp); throw new RuntimeException('Could not finalize file write'); }
+  }
+  return ['sha256'=>hash_file('sha256',$file),'size'=>(int)(@filesize($file) ?: 0)];
+}
+
+function llc_workspace_write_result(PDO $db, array $ctx, array $args): array {
+  $ctx = llc_workspace_require_context($ctx, true);
+  $rel = llc_workspace_normalize_rel((string)($args['path'] ?? ''));
+  llc_workspace_assert_no_symlink_path((string)$ctx['id'], $rel, true);
+  $file = llc_workspace_path((string)$ctx['id'], $rel);
+  $exists = is_file($file);
+  if (file_exists($file) && !$exists) throw new RuntimeException('Path is not a regular file');
+  if (!$exists && array_key_exists('create', $args) && empty($args['create'])) throw new RuntimeException('File does not exist and create=false');
+  $expected = trim((string)($args['expected_sha256'] ?? ''));
+  if ($exists && $expected === '') throw new RuntimeException('Read the existing file first and supply expected_sha256 before overwriting it');
+  if ($expected !== '') {
+    if (!$exists) throw new RuntimeException('expected_sha256 was supplied but the file does not exist');
+    $actual = hash_file('sha256',$file);
+    if (!hash_equals(strtolower($expected), strtolower($actual))) throw new RuntimeException('File changed since it was read (SHA-256 mismatch)');
+  }
+  $snapshotId = $exists ? llc_workspace_snapshot_file($ctx, $rel) : null;
+  $meta = llc_workspace_write_file($ctx, $rel, (string)($args['content'] ?? ''));
+  llc_workspace_touch($db, (string)$ctx['id']);
+  return ['ok'=>true,'path'=>$rel,'created'=>!$exists,'snapshot_id'=>$snapshotId] + $meta;
+}
+
+function llc_workspace_replace_result(PDO $db, array $ctx, array $args): array {
+  $ctx = llc_workspace_require_context($ctx, true);
+  $rel = llc_workspace_normalize_rel((string)($args['path'] ?? ''));
+  llc_workspace_assert_no_symlink_path((string)$ctx['id'], $rel, true);
+  $file = llc_workspace_path((string)$ctx['id'], $rel);
+  if (!is_file($file)) throw new RuntimeException('File not found: ' . $rel);
+  if (llc_workspace_is_binary($file)) throw new RuntimeException('Binary files cannot be edited as text');
+  $size = (int)(@filesize($file) ?: 0);
+  if ($size > 5 * 1024 * 1024) throw new RuntimeException('File is too large to edit (5 MB max)');
+  $expectedHash = trim((string)($args['expected_sha256'] ?? ''));
+  $actualHash = hash_file('sha256',$file);
+  if ($expectedHash === '') throw new RuntimeException('Read the file first and supply expected_sha256 before editing it');
+  if (!hash_equals(strtolower($expectedHash), strtolower($actualHash))) throw new RuntimeException('File changed since it was read (SHA-256 mismatch)');
+  $search = (string)($args['search'] ?? '');
+  if ($search === '') throw new RuntimeException('workspace_replace: missing search');
+  $replacement = (string)($args['replacement'] ?? '');
+  $regex = !empty($args['regex']);
+  $expectedCount = (int)($args['expected_replacements'] ?? 0);
+  if ($expectedCount < 1 || $expectedCount > 10000) throw new RuntimeException('expected_replacements must be between 1 and 10000');
+  $content = file_get_contents($file);
+  if (!is_string($content)) throw new RuntimeException('Could not read file');
+  $count = 0;
+  if ($regex) {
+    $pattern = '~' . str_replace('~', '\\~', $search) . '~u';
+    if (@preg_match($pattern, '') === false) throw new RuntimeException('Invalid regular expression');
+    $next = preg_replace($pattern, $replacement, $content, -1, $count);
+    if (!is_string($next)) throw new RuntimeException('Regular expression replacement failed');
+  } else {
+    $next = str_replace($search, $replacement, $content, $count);
+  }
+  if ($count !== $expectedCount) throw new RuntimeException('Replacement count mismatch: expected ' . $expectedCount . ', found ' . $count);
+  if (!empty($args['dry_run'])) return ['ok'=>true,'path'=>$rel,'dry_run'=>true,'replacements'=>$count,'sha256'=>$actualHash];
+  $snapshotId = llc_workspace_snapshot_file($ctx, $rel);
+  $meta = llc_workspace_write_file($ctx, $rel, $next);
+  llc_workspace_touch($db, (string)$ctx['id']);
+  return ['ok'=>true,'path'=>$rel,'replacements'=>$count,'snapshot_id'=>$snapshotId] + $meta;
+}
+
+function llc_workspace_delete_result(PDO $db, array $ctx, array $args): array {
+  $ctx = llc_workspace_require_context($ctx, true);
+  $rel = llc_workspace_normalize_rel((string)($args['path'] ?? ''));
+  llc_workspace_assert_no_symlink_path((string)$ctx['id'], $rel, true);
+  $file = llc_workspace_path((string)$ctx['id'], $rel);
+  if (!is_file($file)) throw new RuntimeException('Only regular files can be deleted in this version');
+  $expected = trim((string)($args['expected_sha256'] ?? ''));
+  $actual = hash_file('sha256',$file);
+  if ($expected === '') throw new RuntimeException('Read the file first and supply expected_sha256 before deleting it');
+  if (!hash_equals(strtolower($expected), strtolower($actual))) throw new RuntimeException('File changed since it was read (SHA-256 mismatch)');
+  $snapshotId = llc_workspace_snapshot_file($ctx, $rel);
+  if (!@unlink($file)) throw new RuntimeException('Could not delete file');
+  llc_workspace_touch($db, (string)$ctx['id']);
+  return ['ok'=>true,'path'=>$rel,'deleted'=>true,'snapshot_id'=>$snapshotId];
+}
+
+function llc_workspace_restore_result(PDO $db, array $ctx, array $args): array {
+  $ctx = llc_workspace_require_context($ctx, true);
+  $rel = llc_workspace_normalize_rel((string)($args['path'] ?? ''));
+  $snapId = trim((string)($args['snapshot_id'] ?? ''));
+  if (!preg_match('/^snap_[A-Za-z0-9_]+$/', $snapId)) throw new RuntimeException('Invalid snapshot id');
+  $source = llc_workspace_snapshots_dir((string)$ctx['id']) . '/' . $snapId . '/' . $rel;
+  if (!is_file($source) || is_link($source)) throw new RuntimeException('Snapshot file not found');
+  $currentSnapshot = is_file(llc_workspace_path((string)$ctx['id'], $rel)) ? llc_workspace_snapshot_file($ctx, $rel) : null;
+  $content = file_get_contents($source);
+  if (!is_string($content)) throw new RuntimeException('Could not read snapshot');
+  $meta = llc_workspace_write_file($ctx, $rel, $content);
+  llc_workspace_touch($db, (string)$ctx['id']);
+  return ['ok'=>true,'path'=>$rel,'restored_from'=>$snapId,'previous_snapshot_id'=>$currentSnapshot] + $meta;
+}
+
+
 function llc_file_upload(): void {
   $db = llc_db();
   $u = llc_require_user($db);
@@ -7726,6 +9029,12 @@ function llc_chat_stream(): void {
   $documentState = $j['document'] ?? [];
   if (!is_array($documentState)) $documentState = [];
   $documentMode = (!empty($j['webtools']['document']) || (($documentState['mode'] ?? '') === 'document'));
+  $workspaceContext = null;
+  $workspaceError = '';
+  if (!empty($j['webtools']['code_workspace'])) {
+    try { $workspaceContext = llc_workspace_context_from_request($db, $u, $j); }
+    catch (Throwable $e) { $workspaceError = $e->getMessage(); }
+  }
 
 
   // IMPORTANT: Attachments must stay bound to the message they were uploaded/generated with.
@@ -7869,6 +9178,20 @@ function llc_chat_stream(): void {
     $docInstruction = "Document mode is active. You can manage multiple persistent documents in this chat. Use document_create for every new file/document. Use document_update with document_id when editing a specific existing document, or omit document_id to edit the active document. Use document_select when the user asks to switch the active document. Do not paste the full document into the chat unless the user asks for it.\n\nDOCUMENTS:\n{$docListText}\n\nACTIVE_DOCUMENT: id={$activeId}, title={$docTitle}, type={$docType}, version={$docVer}.\n\nACTIVE_DOCUMENT_CONTENT:\n" . $docContent;
     $oa[] = ['role'=>'system','content'=>$docInstruction];
   }
+  if (!empty($j['webtools']['code_workspace'])) {
+    if ($workspaceContext) {
+      $wsName = (string)($workspaceContext['name'] ?? 'Workspace');
+      $wsAccess = (string)($workspaceContext['access'] ?? 'read');
+      $wsStrategy = (string)($workspaceContext['strategy'] ?? 'efficient');
+      $wsInstruction = "A managed code workspace is active: {$wsName}. Access: {$wsAccess}. The project files are not included in the prompt. Inspect them step by step with workspace_tree, workspace_search and workspace_read. Do not claim to have inspected or changed files unless the corresponding tool succeeded. For targeted edits prefer workspace_replace; use workspace_write mainly for new files or complete rewrites.";
+      if ($wsStrategy === 'efficient') {
+        $wsInstruction .= "\n\nTOOL STRATEGY: EFFICIENT\nUse as little workspace context as possible, but as much as is needed for a reliable result. Choose the smallest reliable sequence of tool calls rather than following a rigid rule.\n\nWhen the request concerns identifiable text, an HTML tag, a function or class, a variable, a configuration key, a filename, or an error message, normally use workspace_search first. Do not read a complete file merely to locate something that search can find.\n\nFor a local, unambiguous change, inspect only enough context to make the edit safely. If the file and exact old text are already known, a narrow workspace_read may be used to obtain the current hash, followed by workspace_replace. If the target is not yet known, search first, then read only the smallest useful range if context or a current hash is needed. A request to modify a file is not by itself a reason to read the whole file.\n\nUse broader reads, including a complete file when appropriate, if the file is small or the task genuinely requires understanding its overall structure, syntax, interactions, or behavior. After editing, verify the result from the tool response or with a narrow search/read. Do not inspect unrelated files, and stop once the user's request has been completed.";
+      }
+      $oa[] = ['role'=>'system','content'=>$wsInstruction];
+    } else {
+      $oa[] = ['role'=>'system','content'=>'Code workspace was enabled but is unavailable: ' . ($workspaceError !== '' ? $workspaceError : 'no workspace selected')];
+    }
+  }
 
   // Qwen 3.5/3.6 and other strict templates require system messages to appear
   // only at the beginning. Normalize once after importing chat history so any
@@ -7902,7 +9225,7 @@ $payload = array_merge([
 
   // ---------- tool calling path (non-stream upstream + SSE to client) ----------
   if ($toolsEnabled) {
-    $tools = llc_tools_for_request(!empty($j['webtools']['web']), !empty($j['webtools']['search']), !empty($j['webtools']['image']), !empty($j['webtools']['document']));
+    $tools = llc_tools_for_request(!empty($j['webtools']['web']), !empty($j['webtools']['search']), !empty($j['webtools']['image']), !empty($j['webtools']['document']), !empty($j['webtools']['code_workspace']), (string)($workspaceContext['access'] ?? 'read'));
     $customEnabled = (isset($j['webtools']['custom_tools']) && is_array($j['webtools']['custom_tools'])) ? $j['webtools']['custom_tools'] : [];
     $customTools = llc_custom_tools_openai($db, $u, $customEnabled);
     if (!empty($customTools)) $tools = array_merge($tools, $customTools);
@@ -7920,6 +9243,13 @@ $payload = array_merge([
     if (!empty($j['webtools']['search'])) $hintParts[] = "For finding sources, call web_search({q, type}).";
     if (!empty($j['webtools']['web'])) $hintParts[] = "For reading the content behind a link, call web_read({url}).";
     if (!empty($j['webtools']['document'])) $hintParts[] = "In Document mode, call document_create({title,type,content}) for new documents and document_update({document_id,title,type,content,summary}) for edits. The document_update content must be the full updated document, not a diff. Use document_select({document_id}) to switch active documents. Use document_history, document_get_version, and document_revert when the user wants to inspect, compare, undo, or restore old document versions.";
+    if (!empty($j['webtools']['code_workspace'])) {
+      if (($workspaceContext['strategy'] ?? 'efficient') === 'efficient') {
+        $hintParts[] = "A code workspace is active in efficient mode. Use the smallest reliable tool sequence: as little context as possible, but as much as needed for correctness. Search to locate identifiable text; use narrow reads for local context or the current file hash; read more broadly only when the task genuinely requires whole-file understanding. A requested edit alone is not a reason to read the entire file.";
+      } else {
+        $hintParts[] = "A code workspace is active. Navigate it incrementally with workspace_tree, workspace_search and workspace_read. Use write tools only when needed and report which files were actually changed.";
+      }
+    }
     if (!empty($customTools)) $hintParts[] = "Custom tools are enabled in this chat. Use them when they directly match the user's request.";
     if (!empty($j['webtools']['image'])) {
       $imgProvider = (string)(llc_image_cfg_get($db, $u, 'image_provider') ?? 'openai');
@@ -8013,7 +9343,7 @@ $payload = array_merge([
         foreach ($toolCalls as $tc) {
           if (!is_array($tc)) continue;
           try {
-            $workMessages[] = llc_execute_tool_call($db, $u, $tc, true, $documentState, $workMessages);
+            $workMessages[] = llc_execute_tool_call($db, $u, $tc, true, $documentState, $workMessages, $workspaceContext);
           } catch (Throwable $e) {
             llc_dbg_log('tool_exec_error', ['iter'=>$iter, 'error'=>$e->getMessage()]);
             llc_sse_error('Tool execution failed: ' . $e->getMessage());

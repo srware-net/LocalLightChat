@@ -78,9 +78,6 @@ document.addEventListener('DOMContentLoaded', () => {
   if (_hasMathML && !_hasMenclose) document.documentElement.classList.add('no-menclose');
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  // Escape + preserve line breaks for rendering in normal flow containers.
-  // We insert <br> AFTER escaping to keep it XSS-safe.
-  const escBr = (s) => esc(String(s ?? '').replace(/\r\n?/g, '\n')).replace(/\n/g, '<br>');
 // ---------- MathML rendering (no external libs) ----------
 // This is a pragmatic TeX → MathML converter for the subset we actually use in chat.
 // Supported (best-effort): \frac, \sqrt (incl. \sqrt[n]{x}), ^, _, \sum, \prod, \int,
@@ -722,7 +719,8 @@ const texToMathML = (tex, display=false)=>{
     defaults: { systemPrompt:'' },
     loadingChat: false,
     attachments: [],
-    webtools: { web: false, search: false, image: false, document: false, custom_tools: [] },
+    webtools: { web: false, search: false, image: false, document: false, code_workspace: false, workspace_id: '', workspace_name: '', workspace_access: 'read', workspace_strategy: 'efficient', custom_tools: [] },
+    workspaces: [],
     webFetchBusy: false,
     autoscroll: true,
     // Streaming state is per-chat. Multiple chats may stream in parallel.
@@ -4439,6 +4437,14 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
         return wrap('<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>');
       case 'download':
         return wrap('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>');
+      case 'upload':
+        return wrap('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>');
+      case 'plus':
+        return wrap('<path d="M12 5v14"/><path d="M5 12h14"/>');
+      case 'archive':
+        return wrap('<path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/>');
+      case 'unlink':
+        return wrap('<path d="M10 13a5 5 0 0 0 7.54.54l1.73-1.73a5 5 0 0 0-7.07-7.07L11 5"/><path d="M14 11a5 5 0 0 0-7.54-.54L4.73 12.2a5 5 0 0 0 7.07 7.07L13 19"/><path d="M4 4l16 16"/>');
       case 'trash':
         return wrap('<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>');
       case 'audio':
@@ -5145,6 +5151,495 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     }
   }
 
+  // ---------- Code workspace UI ----------
+  let workspaceModal = null;
+  let workspaceFiles = [];
+
+  function workspaceStatus(message){
+    const el = workspaceModal?.modal?.querySelector('.workspace-status');
+    if (el) el.textContent = message || '';
+  }
+
+  function workspaceUrl(action, params = {}){
+    const q = new URLSearchParams({action, ...params});
+    return `api.php?${q.toString()}`;
+  }
+
+  function activeWorkspace(){
+    const id = String(state.webtools.workspace_id || '');
+    return (Array.isArray(state.workspaces) ? state.workspaces : []).find(w=>String(w.id || '') === id) || null;
+  }
+
+  function formatWorkspaceBytes(bytes){
+    const n = Math.max(0, Number(bytes || 0));
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  }
+
+  function ensureWorkspaceModal(){
+    if (workspaceModal) return workspaceModal;
+    const modal = document.createElement('div');
+    modal.className = 'modal workspace-modal';
+    modal.id = 'workspace-modal';
+    modal.setAttribute('role','dialog');
+    modal.setAttribute('aria-modal','true');
+    modal.setAttribute('aria-hidden','true');
+    modal.innerHTML = `
+      <div class="modal-backdrop" data-workspace-close="1"></div>
+      <div class="modal-panel workspace-modal-panel" role="document">
+        <div class="modal-header">
+          <div>
+            <div class="modal-title">Code workspace</div>
+            <div class="muted workspace-modal-sub">Manage projects and choose what the agent may do in this chat.</div>
+          </div>
+          <button class="icon-btn workspace-close-icon" type="button" data-workspace-close="1" title="Close" aria-label="Close">${iconSvg('x')}</button>
+        </div>
+        <div class="workspace-modal-body">
+          <div class="workspace-create-row">
+            <input class="input workspace-name-input" type="text" maxlength="120" placeholder="New workspace name">
+            <button class="btn btn-primary workspace-create-btn" type="button">${iconSvg('plus')}<span>Create</span></button>
+            <button class="btn btn-ghost workspace-import-btn" type="button">${iconSvg('archive')}<span>Import ZIP</span></button>
+            <input class="visually-hidden workspace-import-input" type="file" accept=".zip,application/zip">
+          </div>
+          <div class="workspace-access-row">
+            <label for="workspace-access-select">Agent access for this chat</label>
+            <select id="workspace-access-select" class="input workspace-access-select">
+              <option value="read">Read only</option>
+              <option value="write">Read and edit</option>
+            </select>
+            <span class="muted workspace-access-note">Select a workspace first. This can be changed at any time.</span>
+          </div>
+          <div class="workspace-strategy-row">
+            <label for="workspace-strategy-select">Tool strategy for this chat</label>
+            <select id="workspace-strategy-select" class="input workspace-strategy-select">
+              <option value="standard">Standard</option>
+              <option value="efficient" selected>Efficient</option>
+            </select>
+            <span class="muted workspace-strategy-note">Efficient is the default and tells the model to use the smallest reliable amount of workspace context.</span>
+          </div>
+          <div class="workspace-status muted" aria-live="polite"></div>
+          <div class="workspace-list"></div>
+
+          <section class="workspace-files-panel hidden" aria-label="Workspace files">
+            <div class="workspace-files-head">
+              <div>
+                <div class="workspace-files-title">Files in <span class="workspace-active-name"></span></div>
+                <div class="muted workspace-files-summary"></div>
+              </div>
+              <button class="btn btn-ghost workspace-export-btn" type="button">${iconSvg('download')}<span>Download ZIP</span></button>
+            </div>
+            <div class="workspace-upload-row">
+              <input class="input workspace-upload-dir" type="text" placeholder="Destination folder (optional), e.g. assets/img">
+              <button class="btn btn-ghost workspace-upload-btn" type="button">${iconSvg('upload')}<span>Add files or ZIP</span></button>
+              <label class="workspace-replace-label" title="Create a snapshot before replacing an existing file">
+                <input class="workspace-upload-replace" type="checkbox"> Replace existing
+              </label>
+              <input class="visually-hidden workspace-files-input" type="file" multiple>
+            </div>
+            <div class="workspace-file-list"></div>
+          </section>
+        </div>
+        <div class="modal-footer workspace-modal-footer">
+          <button class="btn btn-ghost workspace-detach-btn" type="button">${iconSvg('unlink')}<span>Detach from chat</span></button>
+          <button class="btn btn-ghost" type="button" data-workspace-close="1">${iconSvg('x')}<span>Close</span></button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    const close = ()=>{
+      modal.classList.remove('open');
+      modal.setAttribute('aria-hidden','true');
+    };
+    modal.querySelectorAll('[data-workspace-close="1"]').forEach(el=>el.addEventListener('click', close));
+    document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape' && modal.classList.contains('open')) close(); });
+
+    const accessEl = modal.querySelector('.workspace-access-select');
+    accessEl?.addEventListener('change', ()=>{
+      if (!state.webtools.code_workspace || !state.webtools.workspace_id) return;
+      state.webtools.workspace_access = accessEl.value === 'read' ? 'read' : 'write';
+      persistCurrentWebTools();
+      renderWebTools();
+      renderWorkspaceList();
+      workspaceStatus(state.webtools.workspace_access === 'read' ? 'Agent access changed to read only.' : 'Agent access changed to read and edit.');
+    });
+
+    const strategyEl = modal.querySelector('.workspace-strategy-select');
+    strategyEl?.addEventListener('change', ()=>{
+      if (!state.webtools.code_workspace || !state.webtools.workspace_id) return;
+      state.webtools.workspace_strategy = strategyEl.value === 'standard' ? 'standard' : 'efficient';
+      persistCurrentWebTools();
+      renderWebTools();
+      renderWorkspaceList();
+      workspaceStatus(state.webtools.workspace_strategy === 'efficient'
+        ? 'Tool strategy changed to efficient.'
+        : 'Tool strategy changed to standard.');
+    });
+
+    modal.querySelector('.workspace-create-btn')?.addEventListener('click', async ()=>{
+      const input = modal.querySelector('.workspace-name-input');
+      const name = String(input?.value || '').trim();
+      workspaceStatus('Creating workspace…');
+      try {
+        const res = await api('workspace_create', {name: name || 'Untitled workspace'});
+        if (input) input.value = '';
+        await refreshWorkspaceList();
+        if (res?.workspace) await selectWorkspaceForChat(res.workspace, accessEl?.value || 'read');
+        workspaceStatus('Workspace created.');
+      } catch(ex) {
+        workspaceStatus(ex?.message || 'Could not create workspace.');
+      }
+    });
+
+    const importInput = modal.querySelector('.workspace-import-input');
+    modal.querySelector('.workspace-import-btn')?.addEventListener('click', ()=>importInput?.click());
+    importInput?.addEventListener('change', async ()=>{
+      const file = importInput.files?.[0];
+      if (!file) return;
+      workspaceStatus(`Importing ${file.name}…`);
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const res = await fetch('api.php?action=workspace_import', {method:'POST', body:fd});
+        const data = await res.json().catch(()=>({error:`${res.status} ${res.statusText}`}));
+        if (res.status === 401 && typeof window.llcShowLogin === 'function') window.llcShowLogin(data?.error || 'Unauthorized');
+        if (!res.ok) throw new Error(data?.error || 'Workspace import failed');
+        await refreshWorkspaceList();
+        if (data?.workspace) await selectWorkspaceForChat(data.workspace, accessEl?.value || 'read');
+        workspaceStatus(`Imported ${file.name}.`);
+      } catch(ex) {
+        workspaceStatus(ex?.message || 'Workspace import failed.');
+      } finally {
+        importInput.value = '';
+      }
+    });
+
+    const filesInput = modal.querySelector('.workspace-files-input');
+    modal.querySelector('.workspace-upload-btn')?.addEventListener('click', ()=>filesInput?.click());
+    filesInput?.addEventListener('change', async ()=>{
+      const selected = Array.from(filesInput.files || []);
+      const id = String(state.webtools.workspace_id || '');
+      if (!id || !selected.length) return;
+      const targetDir = String(modal.querySelector('.workspace-upload-dir')?.value || '').trim();
+      const replace = !!modal.querySelector('.workspace-upload-replace')?.checked;
+      workspaceStatus(`Adding ${selected.length} selected item${selected.length === 1 ? '' : 's'}…`);
+      try {
+        const fd = new FormData();
+        fd.append('id', id);
+        fd.append('target_dir', targetDir);
+        if (replace) fd.append('replace', '1');
+        selected.forEach(file=>fd.append('files[]', file, file.name));
+        const res = await fetch('api.php?action=workspace_file_upload', {method:'POST', body:fd});
+        const data = await res.json().catch(()=>({error:`${res.status} ${res.statusText}`}));
+        if (res.status === 401 && typeof window.llcShowLogin === 'function') window.llcShowLogin(data?.error || 'Unauthorized');
+        if (!res.ok) throw new Error(data?.error || 'File or ZIP upload failed');
+        await Promise.all([refreshWorkspaceFiles(), refreshWorkspaceList()]);
+        const added = Number(data?.count || 0);
+        const archives = Number(data?.archives || 0);
+        workspaceStatus(`Added ${added} file${added === 1 ? '' : 's'}${archives ? ` from ${archives} ZIP archive${archives === 1 ? '' : 's'}` : ''}.`);
+      } catch(ex) {
+        workspaceStatus(ex?.message || 'File or ZIP upload failed.');
+      } finally {
+        filesInput.value = '';
+      }
+    });
+
+    modal.querySelector('.workspace-export-btn')?.addEventListener('click', ()=>{
+      const id = String(state.webtools.workspace_id || '');
+      if (!id) return workspaceStatus('Select a workspace first.');
+      const a = document.createElement('a');
+      a.href = workspaceUrl('workspace_export', {id});
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    });
+
+    modal.querySelector('.workspace-detach-btn')?.addEventListener('click', ()=>{
+      state.webtools.code_workspace = false;
+      state.webtools.workspace_id = '';
+      state.webtools.workspace_name = '';
+      workspaceFiles = [];
+      persistCurrentWebTools();
+      renderWebTools();
+      renderWorkspaceList();
+      renderWorkspaceFiles();
+      workspaceStatus('Workspace detached from this chat.');
+    });
+
+    workspaceModal = {modal, close, accessEl, strategyEl};
+    return workspaceModal;
+  }
+
+  async function selectWorkspaceForChat(ws, access = null, strategy = null){
+    if (!ws?.id) return;
+    state.webtools.code_workspace = true;
+    state.webtools.workspace_id = String(ws.id);
+    state.webtools.workspace_name = String(ws.name || 'Workspace');
+    state.webtools.workspace_access = (access || state.webtools.workspace_access) === 'read' ? 'read' : 'write';
+    state.webtools.workspace_strategy = (strategy || state.webtools.workspace_strategy) === 'standard' ? 'standard' : 'efficient';
+    persistCurrentWebTools();
+    renderWebTools();
+    renderWorkspaceList();
+    await refreshWorkspaceFiles();
+  }
+
+  function renderWorkspaceList(){
+    const ref = ensureWorkspaceModal();
+    const list = ref.modal.querySelector('.workspace-list');
+    const accessEl = ref.accessEl;
+    const strategyEl = ref.strategyEl;
+    const selectedId = String(state.webtools.workspace_id || '');
+    const selected = !!state.webtools.code_workspace && !!selectedId;
+    if (accessEl) {
+      accessEl.value = state.webtools.workspace_access === 'read' ? 'read' : 'write';
+      accessEl.disabled = !selected;
+    }
+    if (strategyEl) {
+      strategyEl.value = state.webtools.workspace_strategy === 'standard' ? 'standard' : 'efficient';
+      strategyEl.disabled = !selected;
+    }
+    const note = ref.modal.querySelector('.workspace-access-note');
+    if (note) note.textContent = selected
+      ? `Current mode: ${state.webtools.workspace_access === 'read' ? 'read only' : 'read and edit'}. Changes apply immediately to this chat.`
+      : 'Select a workspace first. This can be changed at any time.';
+    const strategyNote = ref.modal.querySelector('.workspace-strategy-note');
+    if (strategyNote) strategyNote.textContent = selected
+      ? (state.webtools.workspace_strategy === 'standard'
+          ? 'Standard adds no special tool-efficiency instruction.'
+          : 'Efficient tells the model to use as little context as possible, but as much as needed for a reliable result.')
+      : 'Efficient is the default and tells the model to use the smallest reliable amount of workspace context.';
+    if (!list) return;
+    list.innerHTML = '';
+    const items = Array.isArray(state.workspaces) ? state.workspaces : [];
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'workspace-empty muted';
+      empty.textContent = 'No workspaces yet. Create an empty workspace or import a ZIP project.';
+      list.appendChild(empty);
+      return;
+    }
+    for (const ws of items) {
+      const row = document.createElement('div');
+      const isSelected = selected && selectedId === String(ws.id || '');
+      row.className = 'workspace-row' + (isSelected ? ' selected' : '');
+
+      const info = document.createElement('button');
+      info.type = 'button';
+      info.className = 'workspace-row-main';
+      const name = document.createElement('span');
+      name.className = 'workspace-row-name';
+      name.textContent = String(ws.name || 'Workspace');
+      const meta = document.createElement('span');
+      meta.className = 'workspace-row-meta';
+      const files = Number(ws.file_count || 0);
+      const access = isSelected ? ` · ${state.webtools.workspace_access === 'read' ? 'read only' : 'read and edit'}` : '';
+      const strategy = isSelected ? ` · ${state.webtools.workspace_strategy === 'standard' ? 'standard' : 'efficient'}` : '';
+      meta.textContent = `${files} file${files === 1 ? '' : 's'}${isSelected ? ' · active' : ''}${access}${strategy}`;
+      info.append(name, meta);
+      info.addEventListener('click', ()=>selectWorkspaceForChat(ws, accessEl?.value || 'read'));
+
+      const rename = document.createElement('button');
+      rename.type = 'button';
+      rename.className = 'icon-btn sm workspace-row-action';
+      rename.title = 'Rename workspace';
+      rename.setAttribute('aria-label','Rename workspace');
+      rename.innerHTML = iconSvg('pencil');
+      rename.addEventListener('click', async (e)=>{
+        e.stopPropagation();
+        const next = prompt('Workspace name', String(ws.name || 'Workspace'));
+        if (next == null || !String(next).trim() || String(next).trim() === String(ws.name || '')) return;
+        workspaceStatus('Renaming workspace…');
+        try {
+          const res = await api('workspace_rename', {id:String(ws.id || ''), name:String(next).trim()});
+          if (isSelected && res?.workspace) {
+            state.webtools.workspace_name = String(res.workspace.name || next).trim();
+            persistCurrentWebTools();
+          }
+          await refreshWorkspaceList();
+          workspaceStatus('Workspace renamed.');
+        } catch(ex) {
+          workspaceStatus(ex?.message || 'Could not rename workspace.');
+        }
+      });
+
+      const download = document.createElement('button');
+      download.type = 'button';
+      download.className = 'icon-btn sm workspace-row-action';
+      download.title = 'Download workspace ZIP';
+      download.setAttribute('aria-label','Download workspace ZIP');
+      download.innerHTML = iconSvg('download');
+      download.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        const a = document.createElement('a');
+        a.href = workspaceUrl('workspace_export', {id:String(ws.id || '')});
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      });
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'icon-btn sm danger workspace-row-delete';
+      del.title = 'Delete workspace';
+      del.setAttribute('aria-label','Delete workspace');
+      del.innerHTML = iconSvg('trash');
+      del.addEventListener('click', async (e)=>{
+        e.stopPropagation();
+        if (!confirm(`Delete workspace “${String(ws.name || 'Workspace')}” and all its files?`)) return;
+        workspaceStatus('Deleting workspace…');
+        try {
+          await api('workspace_delete', {id:String(ws.id || '')});
+          if (isSelected) {
+            state.webtools.code_workspace = false;
+            state.webtools.workspace_id = '';
+            state.webtools.workspace_name = '';
+            workspaceFiles = [];
+            persistCurrentWebTools();
+          }
+          await refreshWorkspaceList();
+          renderWebTools();
+          renderWorkspaceFiles();
+          workspaceStatus('Workspace deleted.');
+        } catch(ex) {
+          workspaceStatus(ex?.message || 'Could not delete workspace.');
+        }
+      });
+      row.append(info, rename, download, del);
+      list.appendChild(row);
+    }
+  }
+
+  function renderWorkspaceFiles(){
+    const ref = ensureWorkspaceModal();
+    const panel = ref.modal.querySelector('.workspace-files-panel');
+    const list = ref.modal.querySelector('.workspace-file-list');
+    const ws = activeWorkspace();
+    const active = !!state.webtools.code_workspace && !!ws;
+    panel?.classList.toggle('hidden', !active);
+    if (!active || !list) {
+      if (list) list.innerHTML = '';
+      return;
+    }
+    const name = ref.modal.querySelector('.workspace-active-name');
+    if (name) name.textContent = String(ws.name || 'Workspace');
+    const summary = ref.modal.querySelector('.workspace-files-summary');
+    const fileItems = workspaceFiles.filter(item=>item.type === 'file');
+    const dirItems = workspaceFiles.filter(item=>item.type === 'directory');
+    if (summary) summary.textContent = `${fileItems.length} file${fileItems.length === 1 ? '' : 's'} · ${dirItems.length} folder${dirItems.length === 1 ? '' : 's'}`;
+    list.innerHTML = '';
+    if (!workspaceFiles.length) {
+      const empty = document.createElement('div');
+      empty.className = 'workspace-empty muted';
+      empty.textContent = 'This workspace is empty. Add files or a ZIP archive above.';
+      list.appendChild(empty);
+      return;
+    }
+    for (const item of workspaceFiles) {
+      const row = document.createElement('div');
+      row.className = `workspace-file-row ${item.type === 'directory' ? 'directory' : 'file'}`;
+      const icon = document.createElement('span');
+      icon.className = 'workspace-file-icon';
+      icon.textContent = item.type === 'directory' ? '▸' : '·';
+      const path = document.createElement('span');
+      path.className = 'workspace-file-path';
+      path.textContent = String(item.path || '');
+      row.append(icon, path);
+      if (item.type === 'file') {
+        const size = document.createElement('span');
+        size.className = 'workspace-file-size';
+        size.textContent = formatWorkspaceBytes(item.size);
+        const download = document.createElement('a');
+        download.className = 'icon-btn sm workspace-file-download';
+        download.title = 'Download file';
+        download.setAttribute('aria-label', `Download ${String(item.path || 'file')}`);
+        download.innerHTML = iconSvg('download');
+        download.href = workspaceUrl('workspace_file_download', {id:String(ws.id || ''), path:String(item.path || '')});
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'icon-btn sm danger workspace-file-delete';
+        remove.title = 'Delete file';
+        remove.setAttribute('aria-label', `Delete ${String(item.path || 'file')}`);
+        remove.innerHTML = iconSvg('trash');
+        remove.addEventListener('click', async ()=>{
+          const rel = String(item.path || '');
+          if (!rel || !confirm(`Delete file “${rel}”? A snapshot will be kept.`)) return;
+          workspaceStatus(`Deleting ${rel}…`);
+          remove.disabled = true;
+          try {
+            await api('workspace_file_delete', {id:String(ws.id || ''), path:rel});
+            await Promise.all([refreshWorkspaceFiles(), refreshWorkspaceList()]);
+            workspaceStatus(`Deleted ${rel}.`);
+          } catch(ex) {
+            workspaceStatus(ex?.message || 'Could not delete file.');
+            remove.disabled = false;
+          }
+        });
+        row.append(size, download, remove);
+      }
+      list.appendChild(row);
+    }
+  }
+
+  async function refreshWorkspaceFiles(){
+    const id = String(state.webtools.workspace_id || '');
+    if (!state.webtools.code_workspace || !id) {
+      workspaceFiles = [];
+      renderWorkspaceFiles();
+      return;
+    }
+    try {
+      const res = await fetch(workspaceUrl('workspace_files', {id}));
+      const data = await res.json().catch(()=>({error:`${res.status} ${res.statusText}`}));
+      if (res.status === 401 && typeof window.llcShowLogin === 'function') window.llcShowLogin(data?.error || 'Unauthorized');
+      if (!res.ok) throw new Error(data?.error || 'Could not load workspace files');
+      workspaceFiles = Array.isArray(data?.items) ? data.items : [];
+      renderWorkspaceFiles();
+      if (data?.truncated) workspaceStatus('File list is truncated after 5000 entries.');
+    } catch(ex) {
+      workspaceFiles = [];
+      renderWorkspaceFiles();
+      workspaceStatus(ex?.message || 'Could not load workspace files.');
+    }
+  }
+
+  async function refreshWorkspaceList(){
+    const res = await api('workspace_list');
+    state.workspaces = Array.isArray(res?.workspaces) ? res.workspaces : [];
+    const activeId = String(state.webtools.workspace_id || '');
+    if (activeId) {
+      const active = state.workspaces.find(w=>String(w.id || '') === activeId);
+      if (active) {
+        state.webtools.workspace_name = String(active.name || state.webtools.workspace_name || 'Workspace');
+      } else if (state.webtools.code_workspace) {
+        state.webtools.code_workspace = false;
+        state.webtools.workspace_id = '';
+        state.webtools.workspace_name = '';
+        workspaceFiles = [];
+        persistCurrentWebTools();
+      }
+    }
+    renderWorkspaceList();
+    renderWorkspaceFiles();
+    renderWebTools();
+  }
+
+  async function openWorkspaceModal(){
+    const ref = ensureWorkspaceModal();
+    ref.modal.classList.add('open');
+    ref.modal.setAttribute('aria-hidden','false');
+    workspaceStatus('Loading workspaces…');
+    try {
+      await refreshWorkspaceList();
+      await refreshWorkspaceFiles();
+      workspaceStatus('');
+    } catch(ex) {
+      workspaceStatus(ex?.message || 'Could not load workspaces.');
+    }
+  }
+
   // ---------- Web tools UI ----------
   function renderWebTools(){
   if (!webToolsBtn || !webToolsMenu) return;
@@ -5153,6 +5648,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   const searchOn = !!state.webtools?.search;
   const imageOn = !!state.webtools?.image;
   const documentOn = !!state.webtools?.document;
+  const workspaceOn = !!state.webtools?.code_workspace && !!String(state.webtools?.workspace_id || '');
   const customSet = enabledCustomTools();
   const customOn = customSet.size > 0;
 
@@ -5160,7 +5656,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   const searchConfigured = isSearchConfigured();
   const imageConfigured = isImageConfigured();
 
-  webToolsBtn.classList.toggle('active', webOn || searchOn || imageOn || documentOn || customOn);
+  webToolsBtn.classList.toggle('active', webOn || searchOn || imageOn || documentOn || workspaceOn || customOn);
   webToolsBtn.classList.toggle('document-active', documentOn);
 
   const webItem = webToolsMenu.querySelector('.webtools-item[data-action="web"]');
@@ -5201,6 +5697,17 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
         : (ip === 'sdcpp') ? 'stable-diffusion.cpp'
         : 'OpenAI Image API';
       sub.textContent = canUse ? label : 'Configure in Settings → Image';
+    }
+  }
+  const workspaceItem = webToolsMenu.querySelector('.webtools-item[data-action="code-workspace"]');
+  if (workspaceItem) {
+    workspaceItem.classList.toggle('active', workspaceOn);
+    const sub = workspaceItem.querySelector('.wt-sub');
+    if (sub) {
+      const name = String(state.webtools?.workspace_name || '').trim();
+      const access = String(state.webtools?.workspace_access || 'read') === 'write' ? 'edit' : 'read only';
+      const strategy = String(state.webtools?.workspace_strategy || 'efficient') === 'standard' ? 'standard' : 'efficient';
+      sub.textContent = workspaceOn ? `${name || 'Workspace'} · ${access} · ${strategy}` : 'Select a project workspace';
     }
   }
   const documentItem = webToolsMenu.querySelector('.webtools-item[data-action="document"]');
@@ -5260,6 +5767,11 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       search: !!state.webtools.search,
       image: !!state.webtools.image,
       document: !!state.webtools.document,
+      code_workspace: !!state.webtools.code_workspace,
+      workspace_id: String(state.webtools.workspace_id || ''),
+      workspace_name: String(state.webtools.workspace_name || ''),
+      workspace_access: String(state.webtools.workspace_access || 'read'),
+      workspace_strategy: String(state.webtools.workspace_strategy || 'efficient'),
       custom_tools: Array.isArray(state.webtools.custom_tools) ? state.webtools.custom_tools : []
     };
     saveChat(state.currentChat).catch(()=>{});
@@ -5292,6 +5804,12 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   if (action === 'custom-tools-toggle') {
     if (webToolsCustomList) webToolsCustomList.classList.toggle('hidden');
     renderWebTools();
+    return;
+  }
+  if (action === 'code-workspace') {
+    webToolsMenu.classList.remove('show');
+    webToolsBtn?.setAttribute('aria-expanded','false');
+    openWorkspaceModal();
     return;
   }
   if (action === 'custom-tool') {
@@ -5863,6 +6381,37 @@ document.addEventListener('paste', (e)=>{
     attachThinkingAutoscroll(el);
     if (!el.classList.contains('expanded')) return;
     if (el.dataset.stickBottom !== '0') el.scrollTop = el.scrollHeight;
+  }
+
+  // Reasoning is plain pre-wrapped text. Keep it as a single text node instead
+  // of rebuilding escaped HTML (and thousands of <br> nodes) on every delta.
+  const normalizeThinkingText = (text)=> String(text ?? '').replace(/\r\n?/g, '\n');
+
+  function setThinkingText(el, text){
+    if (!el) return;
+    const raw = String(text ?? '');
+    el.textContent = normalizeThinkingText(raw);
+    el.dataset.reasoningChars = String(raw.length);
+  }
+
+  function appendThinkingText(el, delta, totalRawLength, previousRawEndsCr=false){
+    if (!el || !delta) return;
+    let raw = String(delta);
+    // If CRLF was split across two stream events, the previous full render has
+    // already normalized the CR. Avoid introducing a second newline for the LF.
+    if (previousRawEndsCr && raw.startsWith('\n')) raw = raw.slice(1);
+    const text = normalizeThinkingText(raw);
+    const onlyChild = el.firstChild && el.firstChild === el.lastChild ? el.firstChild : null;
+    if (onlyChild && onlyChild.nodeType === Node.TEXT_NODE) {
+      onlyChild.appendData(text);
+    } else if (!el.firstChild) {
+      el.appendChild(document.createTextNode(text));
+    } else {
+      // Defensive fallback for old/mutated DOM. The next full sync will collapse
+      // this back to one node if another renderer has inserted child elements.
+      el.appendChild(document.createTextNode(text));
+    }
+    el.dataset.reasoningChars = String(totalRawLength);
   }
 
   // Textarea send
@@ -9051,7 +9600,7 @@ function md(md){
     const thinking = (hasReasoning) ? `
       <div class="thinking-section">
         <div class="thinking-header">🧠 Reasoning <span>▼</span></div>
-        <div class="thinking-content">${escBr(m.reasoning||'')}</div>
+        <div class="thinking-content"></div>
       </div>` : '';
 
     const canResume = (!isUser && isLast && (m.stopped === true));
@@ -9075,6 +9624,7 @@ function md(md){
         </div>
       </div>
     `;
+    if (hasReasoning) setThinkingText(wrap.querySelector('.thinking-content'), m.reasoning || '');
     return wrap;
   }
 
@@ -9440,12 +9990,23 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
         state.webtools.search = !!(wt.search ?? wt.webSearch);
         state.webtools.image = !!(wt.image ?? wt.img ?? wt.image_generation);
         state.webtools.document = !!(wt.document ?? wt.doc ?? wt.workspace);
+        state.webtools.code_workspace = !!wt.code_workspace;
+        state.webtools.workspace_id = String(wt.workspace_id || '');
+        state.webtools.workspace_name = String(wt.workspace_name || '');
+        state.webtools.workspace_access = String(wt.workspace_access || 'read') === 'read' ? 'read' : 'write';
+        state.webtools.workspace_strategy = String(wt.workspace_strategy || 'efficient') === 'standard' ? 'standard' : 'efficient';
+        if (!state.webtools.workspace_id) state.webtools.code_workspace = false;
         state.webtools.custom_tools = Array.isArray(wt.custom_tools) ? wt.custom_tools : [];
       } else {
         state.webtools.web = !!state.ui.webAutoEnable;
         state.webtools.search = !!state.ui.webSearchAutoEnable;
         state.webtools.image = !!state.ui.imageAutoEnable;
         state.webtools.document = false;
+        state.webtools.code_workspace = false;
+        state.webtools.workspace_id = '';
+        state.webtools.workspace_name = '';
+        state.webtools.workspace_access = 'read';
+        state.webtools.workspace_strategy = 'efficient';
         state.webtools.custom_tools = defaultCustomToolNames();
       }
       renderWebTools();
@@ -9777,9 +10338,18 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
         search: !!(state.webtools && state.webtools.search),
         image: !!(state.webtools && state.webtools.image),
         document: !!(state.webtools && state.webtools.document),
+        code_workspace: !!(state.webtools && state.webtools.code_workspace),
+        workspace_id: String(state.webtools?.workspace_id || ''),
+        workspace_access: String(state.webtools?.workspace_access || 'read'),
+        workspace_strategy: String(state.webtools?.workspace_strategy || 'efficient'),
         custom_tools: Array.isArray(state.webtools?.custom_tools) ? state.webtools.custom_tools : []
       },
-      document: (state.webtools && state.webtools.document) ? documentStateForPayload(chat) : { mode: 'chat' }
+      document: (state.webtools && state.webtools.document) ? documentStateForPayload(chat) : { mode: 'chat' },
+      workspace: (state.webtools && state.webtools.code_workspace) ? {
+        id: String(state.webtools.workspace_id || ''),
+        access: String(state.webtools.workspace_access || 'read'),
+        strategy: String(state.webtools.workspace_strategy || 'efficient')
+      } : null
     };
 
     let res;
@@ -9820,6 +10390,65 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
     const dec = new TextDecoder('utf-8');
     let buf = '';
 
+    // Reasoning deltas are often much finer-grained than answer deltas. Buffer only
+    // their DOM writes until the next paint, then append the new text natively.
+    // The full reasoning string still updates immediately in the chat state.
+    let reasoningPending = '';
+    let reasoningFrame = 0;
+
+    const flushReasoningDom = ()=>{
+      if (reasoningFrame) {
+        cancelAnimationFrame(reasoningFrame);
+        reasoningFrame = 0;
+      }
+      const pending = reasoningPending;
+      reasoningPending = '';
+      if (!pending || state.currentChat?.id !== chat.id) return;
+
+      const m = chat.messages[assistantIdx];
+      const msgEl = chatMsgs.querySelector(`.message[data-msg-index="${assistantIdx}"]`);
+      if (!m || !msgEl) return;
+
+      let section = msgEl.querySelector('.thinking-section');
+      if(!section){
+        const wrapper = msgEl.querySelector('.message-wrapper');
+        const before = msgEl.querySelector('.message-content');
+        if (!wrapper || !before) return;
+        section = document.createElement('div');
+        section.className='thinking-section';
+        section.innerHTML = `<div class="thinking-header">🧠 Reasoning <span>▼</span></div><div class="thinking-content"></div>`;
+        wrapper.insertBefore(section, before);
+      }
+
+      const contentEl = section.querySelector('.thinking-content');
+      if (!contentEl) return;
+
+      const full = String(m.reasoning || '');
+      const renderedChars = Number(contentEl.dataset.reasoningChars);
+      const expectedBeforeAppend = full.length - pending.length;
+
+      if (Number.isFinite(renderedChars) && renderedChars === expectedBeforeAppend) {
+        const previousRawEndsCr = expectedBeforeAppend > 0 && full.charCodeAt(expectedBeforeAppend - 1) === 13;
+        appendThinkingText(contentEl, pending, full.length, previousRawEndsCr);
+      } else {
+        // A full message rerender may have replaced the node while a frame was queued.
+        // Resynchronize once; normal streaming continues incrementally afterwards.
+        setThinkingText(contentEl, full);
+      }
+
+      maybeScrollThinking(contentEl);
+      scrollBottom();
+      updateStats();
+    };
+
+    const scheduleReasoningDom = ()=>{
+      if (reasoningFrame) return;
+      reasoningFrame = requestAnimationFrame(()=>{
+        reasoningFrame = 0;
+        flushReasoningDom();
+      });
+    };
+
     const applyDelta = (type, delta)=>{
       const m = chat.messages[assistantIdx];
       if(!m) return;
@@ -9829,6 +10458,12 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
       // Only patch the DOM when this chat is the one currently displayed.
       if (state.currentChat?.id !== chat.id) return;
 
+      if(type==='reasoning'){
+        reasoningPending += delta;
+        scheduleReasoningDom();
+        return;
+      }
+
       const msgEl = chatMsgs.querySelector(`.message[data-msg-index="${assistantIdx}"]`);
       if(!msgEl) return;
       if(type==='content'){
@@ -9836,44 +10471,32 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
         if(contentEl) contentEl.innerHTML = md(m.content||'');
           scheduleFitMermaid(msgEl);
       }
-      if(type==='reasoning'){
-        let section = msgEl.querySelector('.thinking-section');
-        if(!section){
-          const wrapper = msgEl.querySelector('.message-wrapper');
-          const before = msgEl.querySelector('.message-content');
-          section = document.createElement('div');
-          section.className='thinking-section';
-          section.innerHTML = `<div class="thinking-header">🧠 Reasoning <span>▼</span></div><div class="thinking-content"></div>`;
-          wrapper.insertBefore(section, before);
-        }
-        const header = section.querySelector('.thinking-header');
-        if (header) header.innerHTML = `🧠 Reasoning <span>${section.querySelector('.thinking-content')?.classList.contains('expanded')?'▲':'▼'}</span>`;
-        const contentEl = section.querySelector('.thinking-content');
-        if (contentEl) {
-          contentEl.innerHTML = escBr(m.reasoning || '');
-          maybeScrollThinking(contentEl);
-        }
-      }
       scrollBottom();
       updateStats();
     };
 
     // Small UI signal from backend (e.g. web_read start/done)
     let statusEl = null;
-    const setStreamStatus = (text)=>{
-      if (!text) return;
-      if (state.currentChat?.id !== chat.id) return;
+    let statusRevision = 0;
+    const setStreamStatus = (text, phase='')=>{
+      if (!text) return 0;
+      if (state.currentChat?.id !== chat.id) return 0;
+      statusRevision++;
       if (!statusEl) {
         statusEl = document.createElement('div');
         statusEl.className = 'stream-status';
         statusEl.innerHTML = `<span class="pill"></span>`;
         chatMsgs.appendChild(statusEl);
       }
+      statusEl.classList.toggle('done', phase === 'done');
+      statusEl.classList.toggle('error', phase === 'error');
       const pill = statusEl.querySelector('.pill');
       if (pill) pill.textContent = text;
       scrollBottom();
+      return statusRevision;
     };
     const clearStreamStatus = ()=>{
+      statusRevision++;
       if (statusEl && statusEl.parentElement) statusEl.parentElement.removeChild(statusEl);
       statusEl = null;
     };
@@ -9897,10 +10520,14 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
             try{ obj = JSON.parse(data); }catch(_){ continue; }
             if(obj.type==='status'){
               const msg = obj.message || '';
-              if (msg) setStreamStatus(msg);
-              if (obj.phase === 'done') {
-                // Let the user register the info, then clear.
-                setTimeout(()=>clearStreamStatus(), 1500);
+              const phase = obj.phase || '';
+              const revision = msg ? setStreamStatus(msg, phase) : 0;
+              if ((phase === 'done' || phase === 'error') && revision) {
+                // Do not let an old completion timer erase the next tool's status.
+                const delay = phase === 'error' ? 4000 : 2500;
+                setTimeout(()=>{
+                  if (statusRevision === revision) clearStreamStatus();
+                }, delay);
               }
               continue;
             }
@@ -9953,6 +10580,7 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
               continue;
             }
             if(obj.type==='done'){
+              flushReasoningDom();
               const m = chat.messages[assistantIdx];
 
               // If backend didn't send stats, fall back to our rough estimate so the UI isn't blank.
@@ -10044,6 +10672,7 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
               break;
             }
             if(obj.type==='error'){
+              flushReasoningDom();
               if (am) { am.content = 'Error: ' + (obj.error||'unknown'); am.incomplete = false; am.stopped = false; }
               updateStats(true);
               clearStreamStatus();
@@ -10063,6 +10692,7 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
         if (am) { am.content = 'Error: ' + (err?.message||String(err)); am.incomplete = false; am.stopped = false; }
       }
     } finally {
+      flushReasoningDom();
       state.streams.delete(chatId);
       clearStreamStatus();
       renderSidebar();
@@ -10632,6 +11262,11 @@ renderImageSettingsUI();
       state.webtools.search = !!state.ui.webSearchAutoEnable;
       state.webtools.image = !!state.ui.imageAutoEnable;
         state.webtools.document = false;
+        state.webtools.code_workspace = false;
+        state.webtools.workspace_id = '';
+        state.webtools.workspace_name = '';
+        state.webtools.workspace_access = 'read';
+        state.webtools.workspace_strategy = 'efficient';
         state.webtools.custom_tools = defaultCustomToolNames();
       renderWebTools();
       if(state.ui.model) modelBtn.firstChild.textContent = headerModelText() + ' ';
