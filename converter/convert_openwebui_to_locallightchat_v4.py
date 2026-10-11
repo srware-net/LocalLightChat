@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Convert an OpenWebUI SQLite database to a LocalLightChat SQLite database.
+Convert an OpenWebUI SQLite database to a current LocalLightChat SQLite database.
 
 Default behavior:
   - needs only the OpenWebUI DB path
@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS folders (
   user_id TEXT NOT NULL,
   parent_id TEXT NULL,
   name TEXT NOT NULL,
+  is_archive INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -101,9 +102,65 @@ CREATE TABLE IF NOT EXISTS files (
   stored_name TEXT NOT NULL,
   mime TEXT NOT NULL,
   size INTEGER NOT NULL,
+  library_visible INTEGER NOT NULL DEFAULT 0,
+  rag_document_id TEXT NOT NULL DEFAULT '',
+  rag_job_id TEXT NOT NULL DEFAULT '',
+  rag_state TEXT NOT NULL DEFAULT '',
+  rag_chunks INTEGER NOT NULL DEFAULT 0,
+  rag_embedding_model TEXT NOT NULL DEFAULT '',
+  rag_error TEXT NOT NULL DEFAULT '',
+  rag_indexed_at INTEGER NULL,
   created_at INTEGER NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS mcp_sessions (
+  user_id TEXT NOT NULL,
+  chat_id TEXT NOT NULL,
+  server_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  protocol_version TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(user_id, chat_id, server_id),
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_sessions_updated ON mcp_sessions(updated_at);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  chat_id TEXT NOT NULL,
+  run_id TEXT NOT NULL DEFAULT '',
+  tool_call_id TEXT NOT NULL,
+  source_server TEXT NOT NULL DEFAULT '',
+  source_tool TEXT NOT NULL DEFAULT '',
+  mime_type TEXT NOT NULL DEFAULT 'application/json',
+  storage_path TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  line_count INTEGER NOT NULL DEFAULT 0,
+  token_count_original INTEGER NOT NULL DEFAULT 0,
+  token_count_preview INTEGER NOT NULL DEFAULT 0,
+  tokenizer_source TEXT NOT NULL DEFAULT 'estimated_chars_div_4',
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_user_chat ON artifacts(user_id, chat_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_artifacts_user_chat_run ON artifacts(user_id, chat_id, run_id);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_workspaces_user_updated ON workspaces(user_id, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_one_archive_per_user ON folders(user_id) WHERE is_archive=1;
+CREATE INDEX IF NOT EXISTS idx_files_user_library_created ON files(user_id, library_visible, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS templates (
   id TEXT PRIMARY KEY,
@@ -161,6 +218,7 @@ GLOBAL_SETTINGS_DEFAULTS = {
     "search_provider": "serper",
     "serper_api_key": "",
     "brave_api_key": "",
+    "exa_api_key": "",
     "search_custom_url": "",
     "search_custom_news_url": "",
     "search_custom_api_key": "",
@@ -172,9 +230,16 @@ GLOBAL_SETTINGS_DEFAULTS = {
     "search_hl": "de",
     "search_gl": "de",
     "web_allow_private": "0",
-    "web_fetch_max_chars": "20000",
-    "web_tool_max_chars": "12000",
-    "tool_max_iters": "10",
+    "web_fetch_max_chars": "50000",
+    "web_tool_max_chars": "60000",
+    "tool_max_iters": "20",
+    "tool_simple_max_iters": "20",
+    "tool_agentic_max_iters": "200",
+    "agent_activity_mode": "tail",
+    "agent_activity_max_tokens": "1000",
+    "rag_url": "",
+    "rag_top_k": "8",
+    "rag_timeout_sec": "180",
     "upload_hard_limit_mb": "100",
     "media_image_inline_limit_mb": "8",
     "media_audio_inline_limit_mb": "15",
@@ -204,6 +269,8 @@ GLOBAL_SETTINGS_DEFAULTS = {
     "image_comfyui_batch": "1",
     "image_comfyui_timeout_sec": "900",
     "image_comfyui_apply_defaults": "0",
+    "image_comfyui_profiles_json": "[]",
+    "image_comfyui_profile_id": "",
 }
 
 USER_SETTINGS_DEFAULTS = {
@@ -216,12 +283,20 @@ USER_SETTINGS_DEFAULTS = {
     "selected_connection_id": "",
     "selected_model": "",
     "system_prompt": "",
+    "rag_default_mode": "hybrid",
+    "rag_auto_enable": "0",
+    "mcp_servers_json": "[]",
+    "mcp_servers_auto_enable": "0",
+    "mcp_context_mode": "externalize",
+    "mcp_externalize_above_tokens": "6000",
+    "mcp_preview_max_tokens": "2500",
+    "mcp_full_first_pass_max_tokens": "32000",
     "pricing_json": "[]",
     "models_cache_json": "[]",
     "models_cache_at": "0",
     "web_auto_enable": "0",
     "web_search_auto_enable": "0",
-    "web_prefer_attachments": "1",
+    "web_prefer_attachments": "0",
     "voice_auto_enable": "0",
     "voice_auto_send": "1",
     "image_auto_enable": "0",
@@ -624,13 +699,14 @@ def convert_folders(src: sqlite3.Connection, dst: sqlite3.Connection, local_user
         old_id = str(r["id"])
         dst.execute(
             """INSERT OR REPLACE INTO folders
-               (id,user_id,parent_id,name,created_at,updated_at)
-               VALUES (?,?,?,?,?,?)""",
+               (id,user_id,parent_id,name,is_archive,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?)""",
             (
                 mapping[old_id],
                 local_user_id,
                 mapping.get(str(r["parent_id"])) if r["parent_id"] else None,
                 r["name"] or "Folder",
+                0,
                 as_int_seconds(r["created_at"]),
                 as_int_seconds(r["updated_at"], as_int_seconds(r["created_at"])),
             ),
@@ -773,9 +849,9 @@ def insert_openwebui_files(src: sqlite3.Connection, dst: sqlite3.Connection, loc
         stored = media.stored_name_for({"id": fid, "name": original}) if media is not None else os.path.basename(d.get("path") or original)
         dst.execute(
             """INSERT OR REPLACE INTO files
-               (id,user_id,original_name,stored_name,mime,size,created_at)
-               VALUES (?,?,?,?,?,?,?)""",
-            (fid, local_user_id, original, stored, mime, size, as_int_seconds(d.get("created_at"))),
+               (id,user_id,original_name,stored_name,mime,size,library_visible,rag_document_id,rag_job_id,rag_state,rag_chunks,rag_embedding_model,rag_error,rag_indexed_at,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (fid, local_user_id, original, stored, mime, size, 0, "", "", "", 0, "", "", None, as_int_seconds(d.get("created_at"))),
         )
         count += 1
     return count
@@ -935,7 +1011,7 @@ def first_global_connection_id(dst: sqlite3.Connection) -> Optional[str]:
 
 def wipe_local(dst: sqlite3.Connection) -> None:
     # The naked truth: LocalLightChat has no foreign keys in these tables here, so simple deletes are enough.
-    for table in ["sessions", "chats", "folders", "files", "templates", "users"]:
+    for table in ["mcp_sessions", "artifacts", "chats", "folders", "files", "templates", "workspaces", "sessions", "users"]:
         try:
             dst.execute(f"DELETE FROM {table}")
         except sqlite3.Error:

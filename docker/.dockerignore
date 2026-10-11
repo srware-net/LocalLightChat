@@ -1,0 +1,7 @@
+.git
+.gitignore
+.env
+*.zip
+*.tar
+*.tar.gz
+README_DOCKER.md~

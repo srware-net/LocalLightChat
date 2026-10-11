@@ -3,6 +3,10 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR"
 echo "Stopping LocalLightChat..."
 
+# RAG + MCP
+pkill -x ragd 2>/dev/null || true
+pkill -x mcp_server 2>/dev/null || true
+
 # PHP-FPM
 if [ -f "php/php-fpm.pid" ]; then
     kill $(cat php/php-fpm.pid) 2>/dev/null

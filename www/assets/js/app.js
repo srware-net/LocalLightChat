@@ -8,10 +8,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ---------- Mobile viewport height fix (address bar + keyboard)
   // CSS uses: height:calc(var(--vh, 1vh) * 100)
+  let lastViewportHeight = 0;
   const setVh = () => {
     const vv = window.visualViewport;
     const h = (vv && vv.height) ? vv.height : window.innerHeight;
-    if (!h) return;
+    if (!h || Math.abs(h - lastViewportHeight) < 0.5) return;
+    lastViewportHeight = h;
     document.documentElement.style.setProperty('--vh', `${h * 0.01}px`);
   };
   setVh();
@@ -100,15 +102,34 @@ const _TEX_SYMBOLS = {
   iota:'ι', kappa:'κ', lambda:'λ', mu:'μ', nu:'ν', xi:'ξ', pi:'π', varpi:'ϖ', rho:'ρ', varrho:'ϱ', sigma:'σ', varsigma:'ς',
   tau:'τ', upsilon:'υ', phi:'φ', varphi:'ϕ', chi:'χ', psi:'ψ', omega:'ω',
   Gamma:'Γ', Delta:'Δ', Theta:'Θ', Lambda:'Λ', Xi:'Ξ', Pi:'Π', Sigma:'Σ', Upsilon:'Υ', Phi:'Φ', Psi:'Ψ', Omega:'Ω',
-  // operators / relations / arrows
-  cdot:'·', times:'×', pm:'±', leq:'≤', geq:'≥', neq:'≠', approx:'≈', to:'→', leftarrow:'←', Rightarrow:'⇒', infty:'∞'
+  // operators / relations
+  cdot:'·', times:'×', pm:'±', leq:'≤', geq:'≥', neq:'≠', approx:'≈', infty:'∞',
+
+  // arrows. Keep common TeX aliases together so equivalent commands never
+  // fall through to the generic "unknown command = identifier" fallback.
+  to:'→', rightarrow:'→', longrightarrow:'⟶', xrarr:'⟶',
+  leftarrow:'←', longleftarrow:'⟵',
+  leftrightarrow:'↔', longleftrightarrow:'⟷',
+  Rightarrow:'⇒', Longrightarrow:'⟹',
+  Leftarrow:'⇐', Longleftarrow:'⟸',
+  Leftrightarrow:'⇔', Longleftrightarrow:'⟺',
+  mapsto:'↦', longmapsto:'⟼',
+  hookrightarrow:'↪', hookleftarrow:'↩',
+  uparrow:'↑', downarrow:'↓', updownarrow:'↕',
+  Uparrow:'⇑', Downarrow:'⇓', Updownarrow:'⇕',
+  nearrow:'↗', searrow:'↘', swarrow:'↙', nwarrow:'↖'
 };
 
 // Commands that should be rendered as <mo> operators/relations (spacing matters)
 const _TEX_OPS = new Set([
   'cdot','cdotp','times','pm','mp','div',
   'leq','geq','neq','approx','sim','equiv',
-  'to','rightarrow','leftarrow','Rightarrow','Leftarrow','Leftrightarrow',
+  'to','rightarrow','longrightarrow','xrarr',
+  'leftarrow','longleftarrow','leftrightarrow','longleftrightarrow',
+  'Rightarrow','Longrightarrow','Leftarrow','Longleftarrow','Leftrightarrow','Longleftrightarrow',
+  'mapsto','longmapsto','hookrightarrow','hookleftarrow',
+  'uparrow','downarrow','updownarrow','Uparrow','Downarrow','Updownarrow',
+  'nearrow','searrow','swarrow','nwarrow',
   'in','notin','subset','subseteq','supset','supseteq'
 ]);
 
@@ -634,9 +655,10 @@ const texToMathML = (tex, display=false)=>{
     el.classList.add('hidden');
   };
 
-  async function api(action, data=null){
+  async function api(action, data=null, options={}){
     const url = `api.php?action=${encodeURIComponent(action)}`;
     const init = { method: data==null ? 'GET':'POST', headers:{} };
+    if (options && options.signal) init.signal = options.signal;
     if (data!=null){
       init.headers['Content-Type']='application/json';
       init.body = JSON.stringify(data);
@@ -645,17 +667,53 @@ const texToMathML = (tex, display=false)=>{
     const ct = res.headers.get('content-type') || '';
     if (!res.ok){
       let msg = `${res.status} ${res.statusText}`;
+      let errData = null;
       try{
-        msg = ct.includes('application/json') ? (await res.json()).error : await res.text();
+        if (ct.includes('application/json')) {
+          errData = await res.json();
+          msg = errData?.error || msg;
+        } else {
+          msg = await res.text();
+        }
       }catch(_){}
       if (res.status===401 && typeof window.llcShowLogin==='function'){
         window.llcShowLogin(msg || 'Unauthorized');
       }
       const err = new Error(msg);
       err.status = res.status;
+      err.data = errData;
       throw err;
     }
     return ct.includes('application/json') ? res.json() : res.text();
+  }
+
+  let localLightAIInitPromise = null;
+  function initLocalLightAI(config){
+    if (!config || !config.enabled || !config.can_control) return;
+    if (localLightAIInitPromise) return;
+    localLightAIInitPromise = import('./locallightai.js?v=3e2')
+      .then(mod => mod.initLocalLightAI({ config, api }))
+      .catch(err => console.error('LocalLightAI integration failed to initialize:', err));
+  }
+
+  async function deleteStoredFileWithForce(id){
+    try {
+      return await api('file_delete', {id:String(id || '')});
+    } catch (err) {
+      if (!err?.data?.can_force_delete) throw err;
+      const detail = String(err?.data?.rag_error || err?.message || 'The RAG index could not be deleted.');
+      const ok = confirm(`The RAG index could not be deleted:
+
+${detail}
+
+Delete the local file anyway? A stale index may remain in ragd.`);
+      if (!ok) {
+        const cancelled = new Error('Deletion cancelled');
+        cancelled.cancelled = true;
+        throw cancelled;
+      }
+      return api('file_delete', {id:String(id || ''), force:true});
+    }
   }
 
   
@@ -669,6 +727,30 @@ const texToMathML = (tex, display=false)=>{
     const pass  = modal.querySelector('#login-password');
     const err = modal.querySelector('.login-error');
     const btn = modal.querySelector('button[type="submit"]');
+    const hint = modal.querySelector('#login-hint');
+    let setupRequired = false;
+
+    const applyAuthState = (auth={})=>{
+      setupRequired = !!auth?.initial_admin_setup_required;
+      const showDefault = !!auth?.show_default_admin_hint;
+
+      if (ident) ident.disabled = setupRequired;
+      if (pass) pass.disabled = setupRequired;
+      if (btn) btn.disabled = setupRequired;
+
+      if (hint){
+        if (setupRequired){
+          hint.textContent = 'Initial administrator password required. Set LLC_INITIAL_ADMIN_PASSWORD in config.php and reload.';
+          hint.classList.remove('hidden');
+        } else if (showDefault){
+          hint.innerHTML = 'Default: <b>admin</b> / <b>admin</b>';
+          hint.classList.remove('hidden');
+        } else {
+          hint.textContent = '';
+          hint.classList.add('hidden');
+        }
+      }
+    };
 
     const show = (msg='')=>{
       modal.classList.remove('hidden');
@@ -683,9 +765,11 @@ const texToMathML = (tex, display=false)=>{
 
     window.llcShowLogin = show;
     window.llcHideLogin = hide;
+    window.llcSetAuthState = applyAuthState;
 
     form?.addEventListener('submit', async (e)=>{
       e.preventDefault();
+      if (setupRequired) return;
       const identifier = String(ident?.value || '').trim();
       const password = String(pass?.value || '');
       if (!identifier || !password){
@@ -701,7 +785,7 @@ const texToMathML = (tex, display=false)=>{
       }catch(ex){
         if (err) err.textContent = ex?.message || 'Login fehlgeschlagen';
       }finally{
-        if (btn) btn.disabled = false;
+        if (btn) btn.disabled = setupRequired;
       }
     });
   }
@@ -715,11 +799,14 @@ const texToMathML = (tex, display=false)=>{
     users: [],
     user: null,
     models: [],
-    ui: { model:'', connectionId:'', systemPrompt:'', webPreferAttachments:true, mediaImageInline:true, mediaAudioInline:true, uploadHardLimitMb:25, mediaImageInlineLimitMb:8, mediaAudioInlineLimitMb:15, webAutoEnable:false, webSearchAutoEnable:false, webAllowPrivate:false, webFetchMaxChars:20000, webToolMaxChars:12000, searchProvider:'serper', serperApiKey:'', braveApiKey:'', searchCustomUrl:'', searchCustomNewsUrl:'', searchCustomAllowPrivate:false, searchCustomApiKey:'', searchNgxUrl:'', searchNgxAllowPrivate:false, searchNgxApiKey:'', searchGl:'us', searchHl:'en', searchNum:10, imageProvider:'openai', imageBaseUrl:'https://api.openai.com/v1', imageApiKey:'', imageModel:'gpt-image-2', imageOpenrouterBaseUrl:'https://openrouter.ai/api/v1', imageOpenrouterApiKey:'', imageOpenrouterModel:'google/gemini-3-pro-image-preview', imageOpenrouterModels:[], imageOpenrouterModelsBusy:false, imageAutoEnable:false, imageSize:'auto', imageQuality:'auto', imageBackground:'auto', imageOutputFormat:'png', visionAutoAttachLastImage:true, voiceApiKey:'', voiceAutoEnable:false, voiceAutoSend:true, voiceTtsProvider:'browser', voiceTtsModel:'gpt-4o-mini-tts', voiceTtsVoice:'marin', usersShowAll:false, pricing: [], customTools: [], customToolsJson: '[]', customToolsAutoEnable:false },
+    ui: { model:'', connectionId:'', systemPrompt:'', ragAvailable:false, ragAutoEnable:false, ragUrl:'', ragTopK:8, ragTimeoutSec:180, ragDefaultMode:'hybrid', webPreferAttachments:false, mediaImageInline:true, mediaAudioInline:false, uploadHardLimitMb:50, mediaImageInlineLimitMb:8, mediaAudioInlineLimitMb:15, pdfMemorySaving:false, agentActivityMode:'tail', agentActivityMaxTokens:1000, agentCompactAboveTokens:100000, agentCompactKeepToolRounds:6, agentCompactEmergencyEnabled:false, agentCompactModelKey:'__current__', agentCompactReasoningNone:true, webAutoEnable:false, webSearchAutoEnable:false, webAllowPrivate:false, webFetchMaxChars:50000, webToolMaxChars:60000, searchProvider:'serper', serperApiKey:'', braveApiKey:'', exaApiKey:'', searchCustomUrl:'', searchCustomNewsUrl:'', searchCustomAllowPrivate:false, searchCustomApiKey:'', searchNgxUrl:'', searchNgxAllowPrivate:false, searchNgxApiKey:'', searchGl:'us', searchHl:'en', searchNum:10, imageProvider:'openai', imageBaseUrl:'https://api.openai.com/v1', imageApiKey:'', imageModel:'gpt-image-2', imageOpenaiModels:[], imageOpenaiModelsBusy:false, imageOpenaiModelsError:'', imageOpenrouterBaseUrl:'https://openrouter.ai/api/v1', imageOpenrouterApiKey:'', imageOpenrouterModel:'google/gemini-3-pro-image-preview', imageOpenrouterModels:[], imageOpenrouterModelsBusy:false, imageComfyProfiles:[], imageComfyProfileId:'', imageSettingsMode:'generation', imageEditComfyProfiles:[], imageEditComfyProfileId:'', imageEditComfyUrl:'', imageEditComfyWorkflow:'', imageEditComfyBindings:'', imageEditComfySeed:-1, imageEditComfySteps:20, imageEditComfyGuidance:3.5, imageEditComfyWidth:1024, imageEditComfyHeight:1024, imageEditComfyBatch:1, imageEditComfyMegapixels:1, imageEditComfyTimeout:900, imageEditComfyApplyDefaults:false, imageAutoEnable:false, imageSize:'auto', imageQuality:'auto', imageBackground:'auto', imageOutputFormat:'png', visionAutoAttachLastImage:true, voiceApiKey:'', voiceAutoEnable:false, voiceAutoSend:true, voiceTtsProvider:'browser', voiceTtsModel:'gpt-4o-mini-tts', voiceTtsVoice:'marin', usersShowAll:false, pricing: [], customTools: [], customToolsJson: '[]', customToolsAutoEnable:false, mcpServers: [], mcpServersJson: '[]', mcpServersAutoEnable:false, mcpContextMode:'externalize', mcpExternalizeAboveTokens:6000, mcpPreviewMaxTokens:2500, mcpFullFirstPassMaxTokens:32000, modelCapabilityOverrides:{} },
     defaults: { systemPrompt:'' },
     loadingChat: false,
     attachments: [],
-    webtools: { web: false, search: false, image: false, document: false, code_workspace: false, workspace_id: '', workspace_name: '', workspace_access: 'read', workspace_strategy: 'efficient', custom_tools: [] },
+    webtools: { web: false, search: false, rag: false, rag_mode: 'default', image: false, document: false, code_workspace: false, workspace_id: '', workspace_name: '', workspace_access: 'write', workspace_strategy: 'efficient', workspace_offer_download: true, custom_tools: [], mcp_servers: [] },
+    ragActivity: null,
+    ragCapabilities: new Map(), // chat_id -> lazy /v1/status capability snapshot; no polling
+    ragCapabilityPending: new Map(),
     workspaces: [],
     webFetchBusy: false,
     autoscroll: true,
@@ -732,6 +819,14 @@ const texToMathML = (tex, display=false)=>{
     modelPickTarget: null, // e.g. { type:'pricing', idx:n }
     perms: { canCreateConnections: true, inheritGlobalConnections: true, inheritGlobalWeb: false, inheritGlobalSearch: false, inheritGlobalImage: false, inheritGlobalVoice: false },
   };
+
+  const routerDismissedLoads = new Set();
+  let routerModelsRefreshTimer = null;
+  let routerEventSource = null;
+  let routerEventConnectionId = '';
+  let routerEventReady = false;
+  const routerEventDisabled = new Set();
+  const routerEventReadyWaiters = new Set();
 
   // Persist per-chat settings (system prompt + sampling params)
   let scheduleMetaSave = () => {};
@@ -787,11 +882,57 @@ const texToMathML = (tex, display=false)=>{
   const voiceBtn = $('#voice-btn');
   const chatArea = $('.chat-area');
 
+  // Chromium can focus overflow scrollers when PageUp/PageDown, ArrowUp/ArrowDown
+  // or Home/End is used. On very large chats that native path may trigger an
+  // expensive focus/scroll repaint loop (visible as a white focus ring around
+  // the chat viewport). Handle vertical chat navigation ourselves when the
+  // page/chat viewport owns the key so the browser never enters that path.
+  // Form controls and nested scroll areas keep their native keyboard behaviour.
+  document.addEventListener('keydown', (e)=>{
+    const isPageKey = e.key === 'PageUp' || e.key === 'PageDown';
+    const isArrowKey = e.key === 'ArrowUp' || e.key === 'ArrowDown';
+    const isEdgeKey = e.key === 'Home' || e.key === 'End';
+    if (e.defaultPrevented || (!isPageKey && !isArrowKey && !isEdgeKey)) return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (!chatArea || chatArea.scrollHeight <= chatArea.clientHeight + 1) return;
+
+    const active = document.activeElement;
+    const target = e.target;
+    const ownsChatNavKey =
+      active === document.body || active === document.documentElement || active === chatArea ||
+      target === document.body || target === document.documentElement || target === chatArea;
+    if (!ownsChatNavKey) return;
+
+    // Don't move the background conversation while a modal/drawer is open.
+    if (document.querySelector('.modal.open, .drawer.open')) return;
+
+    e.preventDefault();
+    if (active === chatArea) chatArea.blur();
+
+    const maxScrollTop = Math.max(0, chatArea.scrollHeight - chatArea.clientHeight);
+    if (isEdgeKey) {
+      chatArea.scrollTop = e.key === 'Home' ? 0 : maxScrollTop;
+      return;
+    }
+
+    const distance = isPageKey
+      ? Math.max(80, Math.floor(chatArea.clientHeight * 0.88))
+      : 48;
+    const down = e.key === 'PageDown' || e.key === 'ArrowDown';
+    const delta = down ? distance : -distance;
+    chatArea.scrollTop = Math.max(0, Math.min(
+      maxScrollTop,
+      chatArea.scrollTop + delta
+    ));
+  }, {capture:true});
+
   const modelBtn = $('#model-btn');
   const modelMenu = $('#model-menu');
   const modelList = $('#model-list');
   const modelSearch = $('#model-search');
   const modelSearchClear = $('#model-search-clear');
+  const modelImageCapability = $('#model-image-capability');
+  const modelImageCapabilityDetected = $('#model-image-capability-detected');
 
   const kebabBtn = $('#header-kebab');
   const kebabMenu = $('#header-kebab-menu');
@@ -799,15 +940,94 @@ const texToMathML = (tex, display=false)=>{
   const settingsModal = $('#settings-modal');
   const settingsBackdrop = $('#settings-backdrop');
   const settingsClose = $('#settings-close');
-const settingToolMaxIters = $('#setting-tool-max-iters');
+
+  const settingPdfMemorySaving = $('#setting-pdf-memory-saving');
+const settingToolSimpleMaxIters = $('#setting-tool-simple-max-iters');
+const settingToolAgenticMaxIters = $('#setting-tool-agentic-max-iters');
+const settingAgentActivityMode = $('#setting-agent-activity-mode');
+const settingAgentActivityMaxTokens = $('#setting-agent-activity-max-tokens');
+const settingAgentCompactAboveTokens = $('#setting-agent-compact-above-tokens');
+const settingAgentCompactKeepToolRounds = $('#setting-agent-compact-keep-tool-rounds');
+const settingAgentCompactEmergencyEnabled = $('#setting-agent-compact-emergency-enabled');
+const settingAgentCompactModel = $('#setting-agent-compact-model');
+const settingAgentCompactReasoningNone = $('#setting-agent-compact-reasoning-none');
+const settingAgentSupervisorEveryToolCalls = $('#setting-agent-supervisor-every-tool-calls');
+const settingAgentSupervisorModel = $('#setting-agent-supervisor-model');
 const settingUploadHardLimitMb = $('#setting-upload-hard-limit-mb');
 const settingMediaImageInlineLimitMb = $('#setting-media-image-inline-limit-mb');
 const settingMediaAudioInlineLimitMb = $('#setting-media-audio-inline-limit-mb');
+const archiveOldRootDays = $('#archive-old-root-days');
+const archiveOldRootBtn = $('#archive-old-root-btn');
+const archiveOldRootStatus = $('#archive-old-root-status');
 const settingCustomToolsJson = $('#setting-custom-tools-json');
 const settingCustomToolsAutoEnable = $('#setting-custom-tools-auto-enable');
-const settingCustomToolsSave = $('#setting-custom-tools-save');
 const settingCustomToolsFormat = $('#setting-custom-tools-format');
 const settingCustomToolsStatus = $('#setting-custom-tools-status');
+const customToolAddBtn = $('#custom-tool-add-btn');
+const customToolsList = $('#custom-tools-list');
+const customToolsEmpty = $('#custom-tools-empty');
+const customToolEditorModal = $('#custom-tool-editor-modal');
+const customToolEditorClose = $('#custom-tool-editor-close');
+const customToolEditorCancel = $('#custom-tool-editor-cancel');
+const customToolEditorApply = $('#custom-tool-editor-apply');
+const customToolEditorResult = $('#custom-tool-editor-result');
+const customToolEditIndex = $('#custom-tool-edit-index');
+const customToolEditTitle = $('#custom-tool-edit-title');
+const customToolEditName = $('#custom-tool-edit-name');
+const customToolEditDescription = $('#custom-tool-edit-description');
+const customToolEditMethod = $('#custom-tool-edit-method');
+const customToolEditEndpoint = $('#custom-tool-edit-endpoint');
+const customToolEditAllowPrivate = $('#custom-tool-edit-allow-private');
+const customToolHeaderAdd = $('#custom-tool-header-add');
+const customToolHeaderList = $('#custom-tool-header-list');
+const customToolNoHeaders = $('#custom-tool-no-headers');
+const customToolParameterAdd = $('#custom-tool-parameter-add');
+const customToolParameterList = $('#custom-tool-parameter-list');
+const customToolNoParameters = $('#custom-tool-no-parameters');
+const customToolBodyCard = $('#custom-tool-body-card');
+const customToolEditBodyMode = $('#custom-tool-edit-body-mode');
+const customToolBodyModeHint = $('#custom-tool-body-mode-hint');
+const customToolBodyTemplateWrap = $('#custom-tool-body-template-wrap');
+const customToolEditBodyTemplate = $('#custom-tool-edit-body-template');
+const customToolEditId = $('#custom-tool-edit-id');
+const customToolEditTimeout = $('#custom-tool-edit-timeout');
+const settingMcpServersJson = $('#setting-mcp-servers-json');
+const settingMcpServersAutoEnable = $('#setting-mcp-servers-auto-enable');
+const settingMcpServersFormat = $('#setting-mcp-servers-format');
+const settingMcpServersTest = $('#setting-mcp-servers-test');
+const settingMcpServersStatus = $('#setting-mcp-servers-status');
+const settingMcpContextMode = $('#setting-mcp-context-mode');
+const settingMcpExternalizeAbove = $('#setting-mcp-externalize-above');
+const settingMcpPreviewMax = $('#setting-mcp-preview-max');
+const settingMcpFullPassMax = $('#setting-mcp-full-pass-max');
+const settingMcpContextStatus = $('#setting-mcp-context-status');
+const mcpContextLimits = $('#mcp-context-limits');
+const mcpAddBtn = $('#mcp-add-btn');
+const mcpList = $('#mcp-list');
+const mcpEmpty = $('#mcp-empty');
+const mcpEditorModal = $('#mcp-editor-modal');
+const mcpEditorClose = $('#mcp-editor-close');
+const mcpEditorCancel = $('#mcp-editor-cancel');
+const mcpEditorSave = $('#mcp-editor-save');
+const mcpEditorTest = $('#mcp-editor-test');
+const mcpEditorResult = $('#mcp-editor-result');
+const mcpEditIndex = $('#mcp-edit-index');
+const mcpEditName = $('#mcp-edit-name');
+const mcpEditId = $('#mcp-edit-id');
+const mcpEditUrl = $('#mcp-edit-url');
+const mcpEditDescription = $('#mcp-edit-description');
+const mcpEditAuthEnabled = $('#mcp-edit-auth-enabled');
+const mcpEditTokenWrap = $('#mcp-edit-token-wrap');
+const mcpEditToken = $('#mcp-edit-token');
+const mcpTokenReveal = $('#mcp-token-reveal');
+const mcpEditAllowPrivate = $('#mcp-edit-allow-private');
+const mcpHeaderAdd = $('#mcp-header-add');
+const mcpHeaderList = $('#mcp-header-list');
+const mcpNoHeaders = $('#mcp-no-headers');
+const mcpEditProtocol = $('#mcp-edit-protocol');
+const mcpEditTimeout = $('#mcp-edit-timeout');
+const mcpEditMaxResponse = $('#mcp-edit-max-response');
+const mcpEditFollowExecJobs = $('#mcp-edit-follow-exec-jobs');
 const generalSuperNote = $('#general-superadmin-note');
 const settingWebAutoEnable = $('#setting-web-auto-enable');
 const settingWebSearchAutoEnable = $('#setting-websearch-auto-enable');
@@ -824,6 +1044,7 @@ const settingSearchProvider = $('#setting-search-provider');
 const searchInheritNote = $('#search-inherit-note');
 const settingSerperKey = $('#setting-serper-api-key');
 const settingBraveKey = $('#setting-brave-api-key');
+const settingExaKey = $('#setting-exa-api-key');
 const settingSearchCustomUrl = $('#setting-search-custom-url');
 const settingSearchCustomNewsUrl = $('#setting-search-custom-news-url');
 const searchCustomNewsWrap = $('#search-custom-news-wrap');
@@ -838,8 +1059,19 @@ const settingSearchNum = $('#setting-search-num');
 const searchCustomHint = $('#search-custom-hint');
 const searchSerperFields = $('#search-serper-fields');
 const searchBraveFields = $('#search-brave-fields');
+const searchExaFields = $('#search-exa-fields');
 const searchCustomFields = $('#search-custom-fields');
 const searchNgxFields = $('#search-searchngx-fields');
+
+// RAG settings (Settings → RAG)
+const ragSuperNote = $('#rag-superadmin-note');
+const settingRagAutoEnable = $('#setting-rag-auto-enable');
+const settingRagUrl = $('#setting-rag-url');
+const settingRagTopK = $('#setting-rag-top-k');
+const settingRagTimeoutSec = $('#setting-rag-timeout-sec');
+const settingRagDefaultMode = $('#setting-rag-default-mode');
+const settingRagTest = $('#setting-rag-test');
+const settingRagStatus = $('#setting-rag-status');
 
 // Image settings (Settings → Image)
 const settingImageAutoEnable = $('#setting-image-auto-enable');
@@ -848,6 +1080,8 @@ const settingImageProvider = $('#setting-image-provider');
 const settingImageBaseUrl = $('#setting-image-base-url');
 const settingImageApiKey = $('#setting-image-api-key');
 const settingImageModel = $('#setting-image-model');
+const settingImageModelsRefresh = $('#setting-image-models-refresh');
+const settingImageModelsStatus = $('#setting-image-models-status');
 const settingImageOpenrouterBaseUrl = $('#setting-image-openrouter-base-url');
 const settingImageOpenrouterApiKey = $('#setting-image-openrouter-api-key');
 const settingImageOpenrouterModel = $('#setting-image-openrouter-model');
@@ -894,6 +1128,11 @@ const voiceTtsOpenaiFields = $('#voice-tts-openai-fields');
 const imageOpenaiFields = $('#image-openai-fields');
 const imageOpenrouterFields = $('#image-openrouter-fields');
 const imageComfyFields = $('#image-comfyui-fields');
+const settingImageComfyProfile = $('#setting-image-comfyui-profile');
+const settingImageComfyProfileNew = $('#setting-image-comfyui-profile-new');
+const settingImageComfyProfileDuplicate = $('#setting-image-comfyui-profile-duplicate');
+const settingImageComfyProfileRename = $('#setting-image-comfyui-profile-rename');
+const settingImageComfyProfileDelete = $('#setting-image-comfyui-profile-delete');
 const settingImageComfyUrl = $('#setting-image-comfyui-url');
 const settingImageComfyWorkflow = $('#setting-image-comfyui-workflow');
 const settingImageComfyBindings = $('#setting-image-comfyui-bindings');
@@ -906,6 +1145,28 @@ const settingImageComfyHeight = $('#setting-image-comfyui-height');
 const settingImageComfyBatch = $('#setting-image-comfyui-batch');
 const settingImageComfyTimeout = $('#setting-image-comfyui-timeout');
 const settingImageComfyApplyDefaults = $('#setting-image-comfyui-apply-defaults');
+const imageGenerationSettings = $('#image-generation-settings');
+const imageEditingSettings = $('#image-editing-settings');
+const settingImageModeGeneration = $('#setting-image-mode-generation');
+const settingImageModeEditing = $('#setting-image-mode-editing');
+const settingImageEditComfyProfile = $('#setting-image-edit-comfyui-profile');
+const settingImageEditComfyProfileNew = $('#setting-image-edit-comfyui-profile-new');
+const settingImageEditComfyProfileDuplicate = $('#setting-image-edit-comfyui-profile-duplicate');
+const settingImageEditComfyProfileRename = $('#setting-image-edit-comfyui-profile-rename');
+const settingImageEditComfyProfileDelete = $('#setting-image-edit-comfyui-profile-delete');
+const settingImageEditComfyUrl = $('#setting-image-edit-comfyui-url');
+const settingImageEditComfyWorkflow = $('#setting-image-edit-comfyui-workflow');
+const settingImageEditComfyBindings = $('#setting-image-edit-comfyui-bindings');
+const settingImageEditComfyAutodetect = $('#setting-image-edit-comfyui-autodetect');
+const settingImageEditComfySeed = $('#setting-image-edit-comfyui-seed');
+const settingImageEditComfySteps = $('#setting-image-edit-comfyui-steps');
+const settingImageEditComfyGuidance = $('#setting-image-edit-comfyui-guidance');
+const settingImageEditComfyWidth = $('#setting-image-edit-comfyui-width');
+const settingImageEditComfyHeight = $('#setting-image-edit-comfyui-height');
+const settingImageEditComfyBatch = $('#setting-image-edit-comfyui-batch');
+const settingImageEditComfyMegapixels = $('#setting-image-edit-comfyui-megapixels');
+const settingImageEditComfyTimeout = $('#setting-image-edit-comfyui-timeout');
+const settingImageEditComfyApplyDefaults = $('#setting-image-edit-comfyui-apply-defaults');
 
 
   const connList = $('#conn-list');
@@ -969,7 +1230,7 @@ const userCreateMsg = $('#user-create-msg');
   // Status bar (token metrics)
   const statusPromptTokEl = $('#status-tokens-prompt');
   const statusCompletionTokEl = $('#status-tokens-completion');
-  const statusTotalTokEl = $('#status-tokens-total');
+  const statusContextEl = $('#status-context-window');
   const statusCostEl = $('#status-cost');
   const statusSpeedEl = $('#status-speed');
 
@@ -1288,9 +1549,10 @@ const userCreateMsg = $('#user-create-msg');
     return t;
   };
 
-  // C should reflect what's currently visible in the chat.
-  // Prefer real completion_tokens when present; fall back to a rough estimate for messages
-  // that predate metrics (or were imported/edited).
+  // C reflects completion usage represented by the current assistant messages.
+  // Prefer real completion_tokens when present (agent messages may aggregate several
+  // internal model turns); fall back to a rough visible-text estimate for messages
+  // that predate metrics or were imported/edited.
   const sumChatCompletionCurrent = (chat, opts={})=>{
     if (!chat) return 0;
     const excludeIdx = (opts && opts.excludeIdx != null) ? Number(opts.excludeIdx) : null;
@@ -1344,7 +1606,6 @@ const userCreateMsg = $('#user-create-msg');
     return { pt, ct };
   };
 
-
     const updateTokenBarIdle = ()=>{
     if (isCurrentChatStreaming()) return;
 
@@ -1352,7 +1613,7 @@ const userCreateMsg = $('#user-create-msg');
     if (!chat){
       if (statusPromptTokEl) statusPromptTokEl.textContent = `P 0`;
       if (statusCompletionTokEl) statusCompletionTokEl.textContent = `C 0`;
-      if (statusTotalTokEl) statusTotalTokEl.textContent = `T 0`;
+      renderContextWindow();
       if (statusCostEl) statusCostEl.textContent = '';
       if (statusSpeedEl) statusSpeedEl.textContent = `0.0s • 0 tok/s`;
       return;
@@ -1365,18 +1626,6 @@ const userCreateMsg = $('#user-create-msg');
     // C = completion tokens across current (visible) assistant messages.
     // Recompute from the current message list so deletions immediately reflect.
     const C = usageReset ? 0 : sumChatCompletionCurrent(chat);
-
-    // T = "ever generated" completion tokens for this chat (incl. Regenerate runs).
-    let T = 0;
-    if (!usageReset){
-      const metaEver = Number(chat?.meta?.total_gen_tok);
-      if (Number.isFinite(metaEver)) {
-        T = metaEver;
-      } else {
-        const ever = sumChatEverGen(chat);
-        T = ever.any ? ever.total : C;
-      }
-    }
 
     // P = last prompt tokens + last generation tokens (i.e., what the next prompt starts from),
     // plus any draft the user is currently composing.
@@ -1395,7 +1644,7 @@ const userCreateMsg = $('#user-create-msg');
 
     if (statusPromptTokEl) statusPromptTokEl.textContent = `P ${Math.round(P)}`;
     if (statusCompletionTokEl) statusCompletionTokEl.textContent = `C ${Math.round(C)}`;
-    if (statusTotalTokEl) statusTotalTokEl.textContent = `T ${Math.round(T)}`;
+    renderContextWindow();
 
     const costSum = getChatBilledCost(chat);
     if (statusCostEl) statusCostEl.textContent = costSum.any ? `$${fmtUsd(costSum.usd)}` : '';
@@ -1418,6 +1667,9 @@ const userCreateMsg = $('#user-create-msg');
   const webToolsBtn = $('#webtools-btn');
   const webToolsMenu = $('#webtools-menu');
   const webToolsCustomList = $('#webtools-custom-list');
+  const webToolsMcpList = $('#webtools-mcp-list');
+  const webToolsRagList = $('#webtools-rag-list');
+  const webToolsWorkspaceList = $('#webtools-workspace-list');
   const documentPanel = $('#document-panel');
   const documentTitleEl = $('#document-title');
   const documentVersionEl = $('#document-version');
@@ -1437,7 +1689,7 @@ const userCreateMsg = $('#user-create-msg');
   // ---------- Extraction viewer modal ----------
   const extractModal = (()=> {
     const modal = document.createElement('div');
-    modal.className = 'modal';
+    modal.className = 'modal modal-above-modal';
     modal.id = 'extract-modal';
     modal.setAttribute('role','dialog');
     modal.setAttribute('aria-modal','true');
@@ -1832,6 +2084,12 @@ ${h}
   }
 
   const inputContainer = $('#input-container');
+  const runtimeActivity = $('#runtime-activity');
+  const runtimeActivityTitle = $('#runtime-activity-title');
+  const runtimeActivityDetail = $('#runtime-activity-detail');
+  const runtimeActivityProgress = $('#runtime-activity-progress');
+  const runtimeActivityProgressFill = $('#runtime-activity-progress-fill');
+  const runtimeActivityClose = $('#runtime-activity-close');
 
   // Allow PDFs + common text/code formats + images/audio in the file picker.
   // Drag & drop is handled by addFileAttachment() anyway.
@@ -1968,11 +2226,509 @@ ${h}
     if (el.dataset.action === 'donate'){ window.open('https://www.locallightai.com/llc/#donate','_blank','noopener'); }
   });
 
+  // llama.cpp router runtime -------------------------------------------------
+  function modelByKey(key){
+    return (state.models || []).find(m=>m && m.key===key) || null;
+  }
+
+  function currentModelEntry(){
+    const key = currentModelKey();
+    return key ? modelByKey(key) : null;
+  }
+
+  // Model context window ----------------------------------------------------
+  // Non-llama providers expose this directly through /models.context_length.
+  // llama.cpp is different: the useful value is the effective runtime n_ctx
+  // from /props, not the model's theoretical/train-time context length.
+  const modelContextRequests = new Map();
+
+  function modelContextWindow(connectionId, modelId){
+    const key = `${String(connectionId || '')}::${String(modelId || '')}`;
+    const m = modelByKey(key);
+    const n = Number(m?.context_window);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  }
+
+  function formatContextWindow(value){
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return '–';
+    const fixed = (v, digits) => {
+      const s = v.toFixed(digits);
+      return digits > 0 ? s.replace(/\.?0+$/, '') : s;
+    };
+    if (n >= 1_000_000) {
+      const v = n / 1_000_000;
+      return `${fixed(v, v >= 10 ? 1 : 2)}m`;
+    }
+    if (n >= 1_000) {
+      const v = n / 1_000;
+      const digits = v >= 100 ? 0 : (v >= 10 ? 1 : 2);
+      return `${fixed(v, digits)}k`;
+    }
+    return String(Math.round(n));
+  }
+
+  function renderContextWindow(connectionId=state.ui.connectionId, modelId=state.ui.model){
+    if (!statusContextEl) return;
+    const n = modelContextWindow(connectionId, modelId);
+    if (n == null) {
+      statusContextEl.textContent = 'CTX –';
+      statusContextEl.title = 'Maximum context window unavailable';
+      return;
+    }
+    statusContextEl.textContent = `CTX ${formatContextWindow(n)}`;
+    statusContextEl.title = `Maximum context window: ${n.toLocaleString()} tokens`;
+  }
+
+  async function ensureModelContext(model=currentModelEntry()){
+    if (!model || String(model?.backend?.type || '') !== 'llamacpp') return;
+    const existing = Number(model.context_window);
+    if (Number.isFinite(existing) && existing > 0) return;
+    if (model._context_window_checked) return;
+
+    const key = String(model.key || `${model.connection_id || ''}::${model.id || ''}`);
+    if (!key || !model.connection_id || !model.id) return;
+    if (modelContextRequests.has(key)) return modelContextRequests.get(key);
+
+    const request = (async()=>{
+      try {
+        const r = await api('model_context', {
+          connection_id: String(model.connection_id || ''),
+          model: String(model.id || '')
+        });
+        const live = modelByKey(key);
+        if (!live) return;
+        const n = Number(r?.context_window);
+        live._context_window_checked = true;
+        live.context_window = (Number.isFinite(n) && n > 0) ? Math.round(n) : null;
+        if (key === currentModelKey()) renderContextWindow();
+      } catch (_) {
+        // Leave it unchecked so a later model refresh/selection can retry.
+      } finally {
+        modelContextRequests.delete(key);
+      }
+    })();
+    modelContextRequests.set(key, request);
+    return request;
+  }
+
+  function syncCurrentModelContext(){
+    renderContextWindow();
+    ensureModelContext();
+  }
+
+  function isLlamaRouterModel(model){
+    return !!(model && model.management && model.management.type === 'llamacpp_router');
+  }
+
+  function routerStatusValue(model){
+    return String(model?.management?.status?.value || '').toLowerCase();
+  }
+
+  function routerProgress(model){
+    const p = model?.management?.status?.progress;
+    return (p && typeof p === 'object') ? p : null;
+  }
+
+  function routerModelNorm(value){
+    let s = String(value || '').trim().replaceAll('\\','/').toLowerCase();
+    s = s.replace(/[?#].*$/, '').replace(/^file:\/\/+/, '').replace(/^\/+|\/+$/g, '');
+    return s;
+  }
+
+  function routerModelShort(value){
+    const s = routerModelNorm(value);
+    let out = s.split('/').pop() || s;
+    if (out.endsWith('.gguf')) out = out.slice(0, -5);
+    return out;
+  }
+
+  function routerModelMatches(a, b){
+    const na = routerModelNorm(a);
+    const nb = routerModelNorm(b);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+    const sa = routerModelShort(na);
+    const sb = routerModelShort(nb);
+    if (sa && sb && sa === sb) return true;
+    return !!(sa && sb && (na.endsWith('/'+sb) || nb.endsWith('/'+sa)));
+  }
+
+  function routerModelForEvent(connectionId, eventModel){
+    const candidates = (state.models || []).filter(m=>
+      m && String(m.connection_id || '') === String(connectionId || '') && isLlamaRouterModel(m)
+    );
+    return candidates.find(m=>routerModelMatches(m.id, eventModel)) || null;
+  }
+
+  function patchRouterStatus(connectionId, modelId, status, progress=null){
+    const m = routerModelForEvent(connectionId, modelId) || modelByKey(`${connectionId}::${modelId}`);
+    if (!m || !isLlamaRouterModel(m)) return null;
+    const prev = routerStatusValue(m);
+    const next = String(status || '').toLowerCase();
+    m.management.status = m.management.status || {};
+    m.management.status.value = next;
+    if (next === 'loading' && progress && typeof progress === 'object') {
+      m.management.status.progress = progress;
+    } else if (next !== 'loading' || !progress) {
+      delete m.management.status.progress;
+    }
+    if (prev === 'loading' && next !== 'loading') routerDismissedLoads.delete(m.key);
+    return {model:m, previous:prev, current:next};
+  }
+
+  function currentRuntimeStream(){
+    const chatId = String(state.currentChat?.id || '');
+    return chatId ? (state.streams.get(chatId) || null) : null;
+  }
+
+  function runtimeTokenCount(value){
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '0';
+    return Math.max(0, Math.round(n)).toLocaleString();
+  }
+
+  function normalizePromptProgress(obj){
+    const totalRaw = Number(obj?.total);
+    const cacheRaw = Number(obj?.cache);
+    const processedRaw = Number(obj?.processed);
+    if (!Number.isFinite(totalRaw) || !Number.isFinite(cacheRaw) || !Number.isFinite(processedRaw)) return null;
+
+    const total = Math.max(0, Math.round(totalRaw));
+    const cache = Math.max(0, Math.min(total, Math.round(cacheRaw)));
+    const processed = Math.max(0, Math.min(total, Math.round(processedRaw)));
+    const timeRaw = Number(obj?.time_ms);
+    return {
+      total,
+      cache,
+      processed,
+      time_ms: Number.isFinite(timeRaw) ? Math.max(0, timeRaw) : null
+    };
+  }
+
+  function setPromptProgressForChat(chatId, obj){
+    const rec = state.streams.get(String(chatId || ''));
+    if (!rec) return;
+    const progress = normalizePromptProgress(obj);
+    if (!progress) return;
+    rec.promptProgress = progress;
+    if (state.currentChat?.id === chatId) renderRuntimeActivity();
+  }
+
+  function clearPromptProgressForChat(chatId){
+    const rec = state.streams.get(String(chatId || ''));
+    if (!rec || !rec.promptProgress) return;
+    rec.promptProgress = null;
+    if (state.currentChat?.id === chatId) renderRuntimeActivity();
+  }
+
+  function setRagRetrievalProgressForChat(chatId, obj){
+    const rec = state.streams.get(String(chatId || ''));
+    if (!rec) return;
+    rec.ragRetrievalProgress = {
+      mode: String(obj?.mode || ''),
+      title: String(obj?.title || 'RAG retrieval'),
+      detail: String(obj?.detail || '')
+    };
+    if (state.currentChat?.id === chatId) renderRuntimeActivity();
+  }
+
+  function clearRagRetrievalProgressForChat(chatId){
+    const rec = state.streams.get(String(chatId || ''));
+    if (!rec || !rec.ragRetrievalProgress) return;
+    rec.ragRetrievalProgress = null;
+    if (state.currentChat?.id === chatId) renderRuntimeActivity();
+  }
+
+  function setRagRuntimeActivity(next){
+    state.ragActivity = next ? { dismissed:false, ...next } : null;
+    renderRuntimeActivity();
+  }
+
+  function updateRagRuntimeActivity(patch={}){
+    if (!state.ragActivity) state.ragActivity = { dismissed:false };
+    Object.assign(state.ragActivity, patch || {});
+    renderRuntimeActivity();
+  }
+
+  function clearRagRuntimeActivity(delay=0){
+    const clear = ()=>{
+      state.ragActivity = null;
+      renderRuntimeActivity();
+    };
+    if (delay > 0) setTimeout(clear, delay); else clear();
+  }
+
+  function renderRuntimeActivity(){
+    if (!runtimeActivity) return;
+
+    const streamRec = currentRuntimeStream();
+    const requestDismissed = !!streamRec?.runtimeActivityDismissed;
+    const m = currentModelEntry();
+    const key = currentModelKey();
+    const status = routerStatusValue(m);
+
+    const ragActivity = state.ragActivity;
+    if (ragActivity && !ragActivity.dismissed) {
+      const title = String(ragActivity.title || 'Preparing RAG document');
+      const detail = String(ragActivity.detail || '');
+      const pctRaw = Number(ragActivity.percent);
+      const pct = Number.isFinite(pctRaw) ? Math.max(0, Math.min(100, Math.round(pctRaw))) : null;
+      if (runtimeActivityTitle) runtimeActivityTitle.textContent = title;
+      if (runtimeActivityDetail) {
+        runtimeActivityDetail.textContent = detail;
+        runtimeActivityDetail.title = detail;
+      }
+      if (runtimeActivityProgress && runtimeActivityProgressFill) {
+        runtimeActivityProgress.classList.toggle('indeterminate', pct == null);
+        runtimeActivityProgressFill.style.width = pct == null ? '' : `${pct}%`;
+      }
+      runtimeActivity.classList.remove('hidden');
+      return;
+    }
+
+    const ragRetrieval = streamRec?.ragRetrievalProgress;
+    if (!requestDismissed && ragRetrieval) {
+      const title = String(ragRetrieval.title || 'RAG retrieval');
+      const detail = String(ragRetrieval.detail || '');
+      if (runtimeActivityTitle) runtimeActivityTitle.textContent = title;
+      if (runtimeActivityDetail) {
+        runtimeActivityDetail.textContent = detail;
+        runtimeActivityDetail.title = detail;
+      }
+      if (runtimeActivityProgress && runtimeActivityProgressFill) {
+        runtimeActivityProgress.classList.add('indeterminate');
+        runtimeActivityProgressFill.style.width = '';
+      }
+      runtimeActivity.classList.remove('hidden');
+      return;
+    }
+
+    // Model loading has priority because prompt evaluation cannot meaningfully
+    // begin until the selected router model is ready.
+    if (!requestDismissed && m && isLlamaRouterModel(m) && status === 'loading' && !routerDismissedLoads.has(key)) {
+      const p = routerProgress(m);
+      const stage = String(p?.current || '').trim();
+      const raw = Number(p?.value);
+      const hasValue = Number.isFinite(raw);
+      const pct = hasValue ? Math.max(0, Math.min(100, Math.round(raw * 100))) : null;
+      const label = String(m.label || m.id || 'Model');
+
+      if (runtimeActivityTitle) runtimeActivityTitle.textContent = 'Loading model';
+      if (runtimeActivityDetail) {
+        const bits = [label];
+        if (stage) bits.push(stage);
+        if (pct != null) bits.push(`${pct}%`);
+        runtimeActivityDetail.textContent = bits.join(' · ');
+        runtimeActivityDetail.title = bits.join(' · ');
+      }
+      if (runtimeActivityProgress && runtimeActivityProgressFill) {
+        runtimeActivityProgress.classList.toggle('indeterminate', pct == null);
+        runtimeActivityProgressFill.style.width = pct == null ? '' : `${pct}%`;
+      }
+      runtimeActivity.classList.remove('hidden');
+      return;
+    }
+
+    const pp = streamRec?.promptProgress;
+    if (!requestDismissed && pp) {
+      const total = Math.max(0, Number(pp.total) || 0);
+      const cache = Math.max(0, Math.min(total, Number(pp.cache) || 0));
+      const processed = Math.max(0, Math.min(total, Number(pp.processed) || 0));
+      const actualTotal = Math.max(0, total - cache);
+      const actualDone = Math.max(0, Math.min(actualTotal, processed - cache));
+      const pct = actualTotal > 0 ? Math.max(0, Math.min(100, Math.round((actualDone / actualTotal) * 100))) : 100;
+
+      if (runtimeActivityTitle) runtimeActivityTitle.textContent = 'Processing prompt';
+      if (runtimeActivityDetail) {
+        const bits = [];
+        if (actualTotal > 0) bits.push(`${runtimeTokenCount(actualDone)} / ${runtimeTokenCount(actualTotal)} tokens`);
+        else bits.push(`${runtimeTokenCount(total)} tokens`);
+        bits.push(`${pct}%`);
+        if (cache > 0) bits.push(`${runtimeTokenCount(cache)} cached`);
+        runtimeActivityDetail.textContent = bits.join(' · ');
+        runtimeActivityDetail.title = bits.join(' · ');
+      }
+      if (runtimeActivityProgress && runtimeActivityProgressFill) {
+        runtimeActivityProgress.classList.remove('indeterminate');
+        runtimeActivityProgressFill.style.width = `${pct}%`;
+      }
+      runtimeActivity.classList.remove('hidden');
+      return;
+    }
+
+    runtimeActivity.classList.add('hidden');
+  }
+
+  function scheduleRouterModelsRefresh(delay=250){
+    if (routerModelsRefreshTimer) clearTimeout(routerModelsRefreshTimer);
+    routerModelsRefreshTimer = setTimeout(()=>{
+      routerModelsRefreshTimer = null;
+      refreshModels();
+    }, Math.max(0, Number(delay)||0));
+  }
+
+  function settleRouterReadyWaiters(connectionId, ready){
+    for (const waiter of Array.from(routerEventReadyWaiters)){
+      if (waiter.connectionId !== connectionId) continue;
+      routerEventReadyWaiters.delete(waiter);
+      clearTimeout(waiter.timer);
+      waiter.resolve(!!ready);
+    }
+  }
+
+  function applyRouterEvent(obj){
+    const cid = String(obj?.connection_id || routerEventConnectionId || '');
+    if (!cid || obj?.type !== 'model_event') return;
+    const event = String(obj.event || '');
+
+    if (event === 'models_reload' || event === 'model_remove') {
+      scheduleRouterModelsRefresh(100);
+      return;
+    }
+
+    // llama.cpp currently uses model_status for the initial loading state and
+    // status_change for the subsequent progress + terminal state. Its own UI
+    // also accepts status_update, so keep the same compatibility set here.
+    if (!['status_change','model_status','status_update'].includes(event)) return;
+
+    const eventModel = String(obj.model || '');
+    const status = String(obj?.data?.status || '').toLowerCase();
+    if (!eventModel || !status) return;
+
+    const progress = (obj?.data?.progress && typeof obj.data.progress === 'object')
+      ? obj.data.progress
+      : null;
+    const patched = patchRouterStatus(cid, eventModel, status, progress);
+    if (!patched) {
+      // A models_reload can add aliases/presets at runtime. Refresh if the
+      // event refers to a model not present in our current list.
+      scheduleRouterModelsRefresh(100);
+      return;
+    }
+
+    // The picker only needs rebuilding when the state itself changes
+    // (e.g. loading -> loaded makes Eject appear). Progress-only events update
+    // the activity card without rebuilding the hidden model list every tick.
+    if (patched.previous !== patched.current) renderModels();
+    renderRuntimeActivity();
+
+    if (patched.current === 'loaded' || patched.current === 'unloaded' ||
+        patched.current === 'sleeping' || patched.current === 'failed') {
+      scheduleRouterModelsRefresh(1200);
+    }
+  }
+
+  function closeRouterEventStream(){
+    const cid = routerEventConnectionId;
+    try{ routerEventSource?.close?.(); }catch(_){ }
+    routerEventSource = null;
+    routerEventConnectionId = '';
+    routerEventReady = false;
+    if (cid) settleRouterReadyWaiters(cid, false);
+  }
+
+  function syncRouterEventStream(){
+    const m = currentModelEntry();
+    const cid = String(state.ui.connectionId || '');
+
+    if (!cid || !m || !isLlamaRouterModel(m) || routerEventDisabled.has(cid)) {
+      closeRouterEventStream();
+      renderRuntimeActivity();
+      return;
+    }
+
+    if (routerEventSource && routerEventConnectionId === cid) {
+      renderRuntimeActivity();
+      return;
+    }
+
+    closeRouterEventStream();
+    routerEventConnectionId = cid;
+    routerEventReady = false;
+
+    const es = new EventSource(`api.php?action=model_events&connection_id=${encodeURIComponent(cid)}`);
+    routerEventSource = es;
+
+    es.onmessage = (ev)=>{
+      let obj = null;
+      try{ obj = JSON.parse(ev.data || '{}'); }catch(_){ return; }
+
+      if (obj?.type === 'ready') {
+        if (routerEventConnectionId !== cid) return;
+        routerEventReady = true;
+        settleRouterReadyWaiters(cid, true);
+        return;
+      }
+
+      if (obj?.type === 'error') {
+        if (obj?.fatal) {
+          routerEventDisabled.add(cid);
+          settleRouterReadyWaiters(cid, false);
+          if (routerEventConnectionId === cid) closeRouterEventStream();
+        }
+        return;
+      }
+
+      applyRouterEvent(obj);
+    };
+
+    es.onerror = ()=>{
+      // EventSource reconnects automatically. Until the proxy has re-established
+      // the upstream /models/sse connection, don't consider the feed armed.
+      if (routerEventConnectionId === cid) routerEventReady = false;
+    };
+
+    renderRuntimeActivity();
+  }
+
+  async function ensureRouterEventStreamReady(connectionId, timeoutMs=1800){
+    const cid = String(connectionId || '');
+    if (!cid) return false;
+
+    const selected = currentModelEntry();
+    if (!selected || !isLlamaRouterModel(selected) || String(selected.connection_id || '') !== cid) {
+      return false;
+    }
+
+    syncRouterEventStream();
+    if (routerEventSource && routerEventConnectionId === cid && routerEventReady) return true;
+    if (routerEventDisabled.has(cid)) return false;
+
+    return await new Promise(resolve=>{
+      const waiter = {connectionId:cid, resolve, timer:null};
+      waiter.timer = setTimeout(()=>{
+        routerEventReadyWaiters.delete(waiter);
+        resolve(false);
+      }, Math.max(250, Number(timeoutMs)||1800));
+      routerEventReadyWaiters.add(waiter);
+    });
+  }
+
+  runtimeActivityClose?.addEventListener('click', (e)=>{
+    e.preventDefault();
+    if (state.ragActivity && !state.ragActivity.dismissed) {
+      state.ragActivity.dismissed = true;
+      runtimeActivity?.classList.add('hidden');
+      return;
+    }
+    const streamRec = currentRuntimeStream();
+    if (streamRec) streamRec.runtimeActivityDismissed = true;
+    const m = currentModelEntry();
+    const key = currentModelKey();
+    if (key && m && isLlamaRouterModel(m) && routerStatusValue(m) === 'loading') routerDismissedLoads.add(key);
+    runtimeActivity?.classList.add('hidden');
+  });
+
   // Model menu
   modelBtn?.addEventListener('click', (e)=>{
     e.stopPropagation();
     modelMenu.classList.toggle('show');
     if (modelMenu.classList.contains('show')) {
+      // Rebuild on open so router load/unload events that happened while the
+      // picker was closed are reflected by the eject controls immediately.
+      renderModels();
+      renderModelCapabilityControl();
       // Focus search for fast filtering
       setTimeout(()=>{ modelSearch?.focus(); modelSearch?.select?.(); }, 0);
     }
@@ -2004,6 +2760,17 @@ ${h}
     modelSearchClear.classList.add('hidden');
     renderModels();
     modelSearch?.focus();
+  });
+  modelImageCapability?.addEventListener('change', async ()=>{
+    const key = currentModelKey();
+    if (!key) return;
+    const value = String(modelImageCapability.value || 'auto');
+    const next = {...(state.ui.modelCapabilityOverrides || {})};
+    if (value === 'auto') delete next[key];
+    else next[key] = {image:value};
+    state.ui.modelCapabilityOverrides = next;
+    try { await api('settings_save', {model_capability_overrides: next}); } catch(err) { console.warn(err); }
+    renderModelCapabilityControl();
   });
   on('click', '.model-item-btn', async (e, btn)=>{
     // Ignore clicks from the Pricing model picker (it has its own handler).
@@ -2047,6 +2814,27 @@ ${h}
     await setModelPair(m.connection_id, m.id);
   });
 
+  on('click', '.model-eject-btn', async (e, btn)=>{
+    e.preventDefault();
+    e.stopPropagation();
+    const key = String(btn.dataset.key || '');
+    const m = modelByKey(key);
+    if (!m || !isLlamaRouterModel(m) || Number(m.management?.can_unload || 0) !== 1) return;
+    if (routerStatusValue(m) !== 'loaded') return;
+    btn.disabled = true;
+    try{
+      // The router endpoint acknowledges before the child is necessarily gone.
+      // Keep the current state until /models/sse reports unloaded; refresh is a
+      // fallback for deployments that buffer/drop SSE.
+      await api('model_unload', {connection_id:m.connection_id, model:m.id});
+      routerDismissedLoads.delete(key);
+      scheduleRouterModelsRefresh(1200);
+    }catch(err){
+      alert('Could not unload model: ' + (err?.message || String(err)));
+      btn.disabled = false;
+    }
+  });
+
   function headerModelText(){
     const mid = state.ui.model || '';
     const cid = state.ui.connectionId || '';
@@ -2056,6 +2844,29 @@ ${h}
     if (m && m.label) return m.label;
     const prefix = (state.connections||[]).find(x=>x.id===cid)?.prefix || '';
     return prefix ? `${prefix}.${mid}` : mid;
+  }
+
+  function currentModelKey(){
+    const cid = state.ui.connectionId || '';
+    const mid = state.ui.model || '';
+    return cid && mid ? `${cid}::${mid}` : '';
+  }
+
+  function renderModelCapabilityControl(){
+    if (!modelImageCapability) return;
+    const key = currentModelKey();
+    const overrides = state.ui.modelCapabilityOverrides || {};
+    const entry = key ? overrides[key] : null;
+    const override = (entry && typeof entry === 'object') ? String(entry.image || 'auto') : String(entry || 'auto');
+    modelImageCapability.value = ['supported','unsupported'].includes(override) ? override : 'auto';
+    modelImageCapability.disabled = !key;
+    if (!modelImageCapabilityDetected) return;
+    const model = key ? (state.models||[]).find(x=>x.key===key) : null;
+    const cap = model?.capabilities || {};
+    const image = cap.image;
+    const source = String(cap.source || 'unknown');
+    const detected = image === true ? 'supported' : (image === false ? 'not supported' : 'unknown');
+    modelImageCapabilityDetected.textContent = key ? `Detected: ${detected}${source && source!=='unknown' ? ` (${source})` : ''}` : '';
   }
 
   function renderModels(){
@@ -2070,6 +2881,28 @@ ${h}
         return hay.includes(q);
       });
     }
+
+    const canEjectModel = (m)=>isLlamaRouterModel(m) && routerStatusValue(m)==='loaded' && Number(m.management?.can_unload || 0)===1;
+    const appendModelRow = (m)=>{
+      const active = (m.id===state.ui.model) && (m.connection_id===state.ui.connectionId);
+      const li = document.createElement('li');
+      const canEject = canEjectModel(m);
+      li.innerHTML = `
+        <div class="model-item-row">
+          <button class="model-item-btn" data-key="${esc(m.key)}">
+            <span>${esc(m.label||m.id)}</span>
+            <span style="display:flex;gap:6px;align-items:center;">
+              <span class="model-badge">${esc(m.connection_label||'')}</span>
+              ${active?'<span class="model-badge">active</span>':''}
+            </span>
+          </button>
+          ${canEject ? `<button class="model-eject-btn" type="button" data-key="${esc(m.key)}" title="Unload model from VRAM" aria-label="Unload ${esc(m.label||m.id)} from VRAM">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l6 9H6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M6 18h12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>` : ''}
+        </div>`;
+      modelList.appendChild(li);
+    };
+
     if (!models.length){
       const li = document.createElement('li');
       li.innerHTML = q
@@ -2077,6 +2910,18 @@ ${h}
         : `<div class="muted" style="padding:10px 12px;">No models loaded. (Connections → Enable + check key/URL)</div>`;
       modelList.appendChild(li);
     } else {
+      // Keep loaded llama.cpp Router models easy to reach without changing the
+      // normal connection-grouped picker below. These rows are intentionally
+      // duplicated and use the exact same eject eligibility as the regular list.
+      const activeRouterModels = models.filter(canEjectModel);
+      if (activeRouterModels.length){
+        const liH = document.createElement('li');
+        liH.className = 'model-group';
+        liH.innerHTML = `<div class="model-group-title">Active</div>`;
+        modelList.appendChild(liH);
+        for (const m of activeRouterModels) appendModelRow(m);
+      }
+
       const groups = new Map();
       for (const m of models){
         const gl = m.connection_label || m.connection_id || 'Connection';
@@ -2088,20 +2933,7 @@ ${h}
         liH.className = 'model-group';
         liH.innerHTML = `<div class="model-group-title">${esc(gl)}</div>`;
         modelList.appendChild(liH);
-
-        for (const m of arr){
-          const active = (m.id===state.ui.model) && (m.connection_id===state.ui.connectionId);
-          const li = document.createElement('li');
-          li.innerHTML = `
-            <button class="model-item-btn" data-key="${esc(m.key)}">
-              <span>${esc(m.label||m.id)}</span>
-              <span style="display:flex;gap:6px;align-items:center;">
-                <span class="model-badge">${esc(m.connection_label||'')}</span>
-                ${active?'<span class="model-badge">active</span>':''}
-              </span>
-            </button>`;
-          modelList.appendChild(li);
-        }
+        for (const m of arr) appendModelRow(m);
       }
     }
 
@@ -2115,6 +2947,11 @@ ${h}
     state.ui.model = modelId || '';
     modelBtn.firstChild.textContent = headerModelText() + ' ';
     modelMenu.classList.remove('show');
+    syncCurrentModelContext();
+    // Start listening before the selection persistence round-trips complete.
+    // If the user sends immediately, this minimizes the chance of missing the
+    // first model-loading progress event.
+    syncRouterEventStream();
     await api('settings_save', { selected_model: state.ui.model || '', selected_connection_id: state.ui.connectionId || '' });
     if (state.currentChat){
       state.currentChat.model = state.ui.model;
@@ -2123,6 +2960,8 @@ ${h}
       await reloadSidebar();
     }
     renderModels();
+    renderModelCapabilityControl();
+    syncRouterEventStream();
   }
 
   // Settings modal tabs
@@ -2152,6 +2991,7 @@ ${h}
     if (name === 'custom-tools') {
       renderCustomToolsSettingsUI();
     }
+    enhanceSettingsNumberInputs();
   }
   tabBtns.forEach(b=>b.addEventListener('click', ()=>activateTab(b.dataset.tab)));
 
@@ -2514,6 +3354,56 @@ function closePricingModelPicker(){
   });
 
 
+// Replace browser-native number spinners with a compact control that matches
+// the rest of the settings UI. This is intentionally generic so every numeric
+// settings field gets the same treatment.
+function enhanceSettingsNumberInputs(){
+  const inputs = $$('.settings-body input[type="number"]');
+  inputs.forEach(input=>{
+    if (!input || input.dataset.llcNumberEnhanced === '1') return;
+    input.dataset.llcNumberEnhanced = '1';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'llc-number-input-wrap';
+    input.parentNode?.insertBefore(wrap, input);
+    wrap.appendChild(input);
+
+    const stepper = document.createElement('div');
+    stepper.className = 'llc-number-stepper';
+    stepper.setAttribute('aria-hidden', 'false');
+    stepper.innerHTML = `
+      <button class="llc-number-step-btn" type="button" data-dir="up" tabindex="-1" aria-label="Increase value">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 7.5 6 4.5l3 3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="llc-number-step-btn" type="button" data-dir="down" tabindex="-1" aria-label="Decrease value">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>`;
+    wrap.appendChild(stepper);
+
+    const buttons = Array.from(stepper.querySelectorAll('.llc-number-step-btn'));
+    const syncDisabled = ()=> buttons.forEach(btn=>{ btn.disabled = !!input.disabled; });
+    syncDisabled();
+    try{ new MutationObserver(syncDisabled).observe(input, {attributes:true, attributeFilter:['disabled']}); }catch(_){ }
+
+    stepper.addEventListener('click', (e)=>{
+      const btn = e.target?.closest?.('.llc-number-step-btn');
+      if (!btn || input.disabled) return;
+      e.preventDefault();
+      try{
+        if (btn.dataset.dir === 'up') input.stepUp();
+        else input.stepDown();
+      }catch(_){
+        const step = Number(input.step || 1) || 1;
+        const cur = Number(input.value || 0) || 0;
+        input.value = String(cur + (btn.dataset.dir === 'up' ? step : -step));
+      }
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+      input.dispatchEvent(new Event('change', {bubbles:true}));
+    });
+  });
+}
+enhanceSettingsNumberInputs();
+
 // General settings
 settingWebAutoEnable?.addEventListener('change', async ()=>{
   state.ui.webAutoEnable = !!settingWebAutoEnable.checked;
@@ -2577,13 +3467,118 @@ const normalizeWebLimit = (val, fallback)=>{
   return (n < 0) ? 0 : n;
 };
 
-const normalizeToolMaxIters = (val, fallback)=>{
+const normalizeToolRoundLimit = (val, fallback)=>{
+  const n = parseInt(String(val ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < 0) return 0;
+  if (n > 1000000) return 1000000;
+  return n;
+};
+
+const normalizeAgentActivityMode = (val)=> String(val ?? '').toLowerCase() === 'full' ? 'full' : 'tail';
+const normalizeAgentActivityMaxTokens = (val, fallback=1000)=>{
   const n = parseInt(String(val ?? ''), 10);
   if (!Number.isFinite(n)) return fallback;
   if (n < 1) return 1;
-  if (n > 50) return 50;
+  if (n > 1000000) return 1000000;
   return n;
 };
+
+const normalizeAgentCompactAboveTokens = (val, fallback=100000)=>{
+  const n = parseInt(String(val ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < 0) return 0;
+  if (n > 10000000) return 10000000;
+  return n;
+};
+const normalizeAgentCompactKeepToolRounds = (val, fallback=6)=>{
+  const n = parseInt(String(val ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < 0) return 0;
+  if (n > 1000) return 1000;
+  return n;
+};
+const normalizeAgentSupervisorEveryToolCalls = (val, fallback=0)=>{
+  const n = parseInt(String(val ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < 0) return 0;
+  if (n > 1000000) return 1000000;
+  return n;
+};
+
+function renderAgentCompactModelOptions(){
+  if (!settingAgentCompactModel) return;
+  const selected = String(state.ui.agentCompactModelKey || '__current__');
+  settingAgentCompactModel.innerHTML = '';
+  const current = document.createElement('option');
+  current.value = '__current__';
+  current.textContent = 'Current agent model';
+  settingAgentCompactModel.appendChild(current);
+
+  const groups = new Map();
+  for (const m of (Array.isArray(state.models) ? state.models : [])) {
+    if (!m || !m.key || !m.id) continue;
+    const group = String(m.connection_label || m.connection_id || 'Connection');
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(m);
+  }
+  for (const [label, entries] of groups) {
+    const optgroup = document.createElement('optgroup');
+    optgroup.label = label;
+    for (const m of entries) {
+      const option = document.createElement('option');
+      option.value = String(m.key);
+      option.textContent = String(m.label || m.id);
+      optgroup.appendChild(option);
+    }
+    settingAgentCompactModel.appendChild(optgroup);
+  }
+  if (selected !== '__current__' && !Array.from(settingAgentCompactModel.options).some(o=>o.value===selected)) {
+    const unavailable = document.createElement('option');
+    unavailable.value = selected;
+    unavailable.textContent = `${selected.split('::').slice(1).join('::') || selected} (saved, currently unavailable)`;
+    settingAgentCompactModel.appendChild(unavailable);
+  }
+  settingAgentCompactModel.value = selected;
+  if (settingAgentCompactModel.value !== selected) settingAgentCompactModel.value = '__current__';
+}
+
+function renderAgentSupervisorModelOptions(){
+  if (!settingAgentSupervisorModel) return;
+  const selected = String(state.ui.agentSupervisorModelKey || '__current__');
+  settingAgentSupervisorModel.innerHTML = '';
+  const current = document.createElement('option');
+  current.value = '__current__';
+  current.textContent = 'Current agent model';
+  settingAgentSupervisorModel.appendChild(current);
+
+  const groups = new Map();
+  for (const m of (Array.isArray(state.models) ? state.models : [])) {
+    if (!m || !m.key || !m.id) continue;
+    const group = String(m.connection_label || m.connection_id || 'Connection');
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(m);
+  }
+  for (const [label, entries] of groups) {
+    const optgroup = document.createElement('optgroup');
+    optgroup.label = label;
+    for (const m of entries) {
+      const option = document.createElement('option');
+      option.value = String(m.key);
+      option.textContent = String(m.label || m.id);
+      optgroup.appendChild(option);
+    }
+    settingAgentSupervisorModel.appendChild(optgroup);
+  }
+  if (selected !== '__current__' && !Array.from(settingAgentSupervisorModel.options).some(o=>o.value===selected)) {
+    const unavailable = document.createElement('option');
+    unavailable.value = selected;
+    unavailable.textContent = `${selected.split('::').slice(1).join('::') || selected} (saved, currently unavailable)`;
+    settingAgentSupervisorModel.appendChild(unavailable);
+  }
+  settingAgentSupervisorModel.value = selected;
+  if (settingAgentSupervisorModel.value !== selected) settingAgentSupervisorModel.value = '__current__';
+}
 
 const normalizeMbLimit = (val, fallback, min=0, max=1024)=>{
   const n = parseInt(String(val ?? ''), 10);
@@ -2596,23 +3591,96 @@ const normalizeMbLimit = (val, fallback, min=0, max=1024)=>{
 const renderGeneralSettingsUI = ()=>{
   const isSuper = String(state.user?.role || 'user') === 'superadmin';
   if (generalSuperNote) generalSuperNote.classList.toggle('hidden', !isSuper);
-  [settingToolMaxIters, settingUploadHardLimitMb, settingMediaImageInlineLimitMb, settingMediaAudioInlineLimitMb].forEach(el=>{
+  [settingToolSimpleMaxIters, settingToolAgenticMaxIters, settingAgentActivityMode, settingUploadHardLimitMb, settingMediaImageInlineLimitMb, settingMediaAudioInlineLimitMb, settingPdfMemorySaving].forEach(el=>{
     try{ if (el) el.disabled = !isSuper; }catch(_){}
   });
+  try {
+    if (settingAgentActivityMaxTokens) settingAgentActivityMaxTokens.disabled = !isSuper || normalizeAgentActivityMode(state.ui.agentActivityMode) === 'full';
+  } catch(_) {}
 };
 
-settingToolMaxIters?.addEventListener('change', async ()=>{
+settingToolSimpleMaxIters?.addEventListener('change', async ()=>{
   const isSuper = String(state.user?.role || 'user') === 'superadmin';
   if (!isSuper) { renderGeneralSettingsUI(); return; }
-  state.ui.toolMaxIters = normalizeToolMaxIters(settingToolMaxIters.value, 10);
-  if (settingToolMaxIters) settingToolMaxIters.value = String(state.ui.toolMaxIters);
-  try { await api('settings_save', { tool_max_iters: state.ui.toolMaxIters }); } catch(_){ /* ignore */ }
+  state.ui.toolSimpleMaxIters = normalizeToolRoundLimit(settingToolSimpleMaxIters.value, 20);
+  if (settingToolSimpleMaxIters) settingToolSimpleMaxIters.value = String(state.ui.toolSimpleMaxIters);
+  try { await api('settings_save', { tool_simple_max_iters: state.ui.toolSimpleMaxIters }); } catch(_){ /* ignore */ }
+});
+
+settingToolAgenticMaxIters?.addEventListener('change', async ()=>{
+  const isSuper = String(state.user?.role || 'user') === 'superadmin';
+  if (!isSuper) { renderGeneralSettingsUI(); return; }
+  state.ui.toolAgenticMaxIters = normalizeToolRoundLimit(settingToolAgenticMaxIters.value, 200);
+  if (settingToolAgenticMaxIters) settingToolAgenticMaxIters.value = String(state.ui.toolAgenticMaxIters);
+  try { await api('settings_save', { tool_agentic_max_iters: state.ui.toolAgenticMaxIters }); } catch(_){ /* ignore */ }
+});
+
+
+settingAgentActivityMode?.addEventListener('change', async ()=>{
+  const isSuper = String(state.user?.role || 'user') === 'superadmin';
+  if (!isSuper) { renderGeneralSettingsUI(); return; }
+  state.ui.agentActivityMode = normalizeAgentActivityMode(settingAgentActivityMode.value);
+  if (settingAgentActivityMode) settingAgentActivityMode.value = state.ui.agentActivityMode;
+  renderGeneralSettingsUI();
+  try { await api('settings_save', { agent_activity_mode: state.ui.agentActivityMode }); } catch(_){ /* ignore */ }
+});
+
+settingAgentActivityMaxTokens?.addEventListener('change', async ()=>{
+  const isSuper = String(state.user?.role || 'user') === 'superadmin';
+  if (!isSuper) { renderGeneralSettingsUI(); return; }
+  state.ui.agentActivityMaxTokens = normalizeAgentActivityMaxTokens(settingAgentActivityMaxTokens.value, 1000);
+  if (settingAgentActivityMaxTokens) settingAgentActivityMaxTokens.value = String(state.ui.agentActivityMaxTokens);
+  try { await api('settings_save', { agent_activity_max_tokens: state.ui.agentActivityMaxTokens }); } catch(_){ /* ignore */ }
+});
+
+settingAgentCompactAboveTokens?.addEventListener('change', async ()=>{
+  state.ui.agentCompactAboveTokens = normalizeAgentCompactAboveTokens(settingAgentCompactAboveTokens.value, 100000);
+  settingAgentCompactAboveTokens.value = String(state.ui.agentCompactAboveTokens);
+  try { await api('settings_save', { agent_compact_above_tokens: state.ui.agentCompactAboveTokens }); } catch(_){ /* ignore */ }
+});
+
+settingAgentCompactKeepToolRounds?.addEventListener('change', async ()=>{
+  state.ui.agentCompactKeepToolRounds = normalizeAgentCompactKeepToolRounds(settingAgentCompactKeepToolRounds.value, 6);
+  settingAgentCompactKeepToolRounds.value = String(state.ui.agentCompactKeepToolRounds);
+  try { await api('settings_save', { agent_compact_keep_tool_rounds: state.ui.agentCompactKeepToolRounds }); } catch(_){ /* ignore */ }
+});
+
+settingAgentCompactEmergencyEnabled?.addEventListener('change', async ()=>{
+  state.ui.agentCompactEmergencyEnabled = !!settingAgentCompactEmergencyEnabled.checked;
+  try { await api('settings_save', { agent_compact_emergency_enabled: state.ui.agentCompactEmergencyEnabled ? 1 : 0 }); }
+  catch(_){ if (settingAgentCompactEmergencyEnabled) settingAgentCompactEmergencyEnabled.checked = !!state.ui.agentCompactEmergencyEnabled; }
+});
+
+settingAgentCompactModel?.addEventListener('change', async ()=>{
+  const value = String(settingAgentCompactModel.value || '__current__');
+  state.ui.agentCompactModelKey = value || '__current__';
+  try { await api('settings_save', { agent_compact_model_key: state.ui.agentCompactModelKey }); }
+  catch(_){ renderAgentCompactModelOptions(); }
+});
+
+settingAgentCompactReasoningNone?.addEventListener('change', async ()=>{
+  state.ui.agentCompactReasoningNone = !!settingAgentCompactReasoningNone.checked;
+  try { await api('settings_save', { agent_compact_reasoning_none: state.ui.agentCompactReasoningNone ? 1 : 0 }); }
+  catch(_){ if (settingAgentCompactReasoningNone) settingAgentCompactReasoningNone.checked = !!state.ui.agentCompactReasoningNone; }
+});
+
+settingAgentSupervisorEveryToolCalls?.addEventListener('change', async ()=>{
+  state.ui.agentSupervisorEveryToolCalls = normalizeAgentSupervisorEveryToolCalls(settingAgentSupervisorEveryToolCalls.value, 0);
+  settingAgentSupervisorEveryToolCalls.value = String(state.ui.agentSupervisorEveryToolCalls);
+  try { await api('settings_save', { agent_supervisor_every_tool_calls: state.ui.agentSupervisorEveryToolCalls }); } catch(_){ /* ignore */ }
+});
+
+settingAgentSupervisorModel?.addEventListener('change', async ()=>{
+  const value = String(settingAgentSupervisorModel.value || '__current__');
+  state.ui.agentSupervisorModelKey = value || '__current__';
+  try { await api('settings_save', { agent_supervisor_model_key: state.ui.agentSupervisorModelKey }); }
+  catch(_){ renderAgentSupervisorModelOptions(); }
 });
 
 settingUploadHardLimitMb?.addEventListener('change', async ()=>{
   const isSuper = String(state.user?.role || 'user') === 'superadmin';
   if (!isSuper) { renderGeneralSettingsUI(); return; }
-  state.ui.uploadHardLimitMb = normalizeMbLimit(settingUploadHardLimitMb.value, 25, 1, 1024);
+  state.ui.uploadHardLimitMb = normalizeMbLimit(settingUploadHardLimitMb.value, 50, 1, 1024);
   if (settingUploadHardLimitMb) settingUploadHardLimitMb.value = String(state.ui.uploadHardLimitMb);
   try { await api('settings_save', { upload_hard_limit_mb: state.ui.uploadHardLimitMb }); } catch(_){ /* ignore */ }
 });
@@ -2633,6 +3701,68 @@ settingMediaAudioInlineLimitMb?.addEventListener('change', async ()=>{
   try { await api('settings_save', { media_audio_inline_limit_mb: state.ui.mediaAudioInlineLimitMb }); } catch(_){ /* ignore */ }
 });
 
+settingPdfMemorySaving?.addEventListener('change', async ()=>{
+  const isSuper = String(state.user?.role || 'user') === 'superadmin';
+  if (!isSuper) {
+    if (settingPdfMemorySaving) settingPdfMemorySaving.checked = !!state.ui.pdfMemorySaving;
+    renderGeneralSettingsUI();
+    return;
+  }
+  const previous = !!state.ui.pdfMemorySaving;
+  const next = !!settingPdfMemorySaving.checked;
+  try {
+    await api('settings_save', { pdf_memory_saving: next ? 1 : 0 });
+    state.ui.pdfMemorySaving = next;
+  } catch(_){
+    if (settingPdfMemorySaving) settingPdfMemorySaving.checked = previous;
+  }
+});
+
+const normalizeArchiveDays = (val, fallback=30)=>{
+  const n = parseInt(String(val ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < 1) return 1;
+  if (n > 36500) return 36500;
+  return n;
+};
+
+try{
+  const savedArchiveDays = localStorage.getItem('archive_old_root_days');
+  if (archiveOldRootDays && savedArchiveDays !== null) archiveOldRootDays.value = String(normalizeArchiveDays(savedArchiveDays, 30));
+}catch(_){ }
+
+archiveOldRootDays?.addEventListener('change', ()=>{
+  const days = normalizeArchiveDays(archiveOldRootDays.value, 30);
+  archiveOldRootDays.value = String(days);
+  try{ localStorage.setItem('archive_old_root_days', String(days)); }catch(_){ }
+});
+
+archiveOldRootBtn?.addEventListener('click', async ()=>{
+  const days = normalizeArchiveDays(archiveOldRootDays?.value, 30);
+  if (archiveOldRootDays) archiveOldRootDays.value = String(days);
+  try{ localStorage.setItem('archive_old_root_days', String(days)); }catch(_){ }
+
+  const previousLabel = archiveOldRootBtn.textContent;
+  archiveOldRootBtn.disabled = true;
+  archiveOldRootBtn.textContent = 'Archiving…';
+  if (archiveOldRootStatus) archiveOldRootStatus.textContent = '';
+  try{
+    const r = await api('archive_old_root_chats', {days});
+    const moved = Math.max(0, Number(r?.moved || 0) || 0);
+    await reloadSidebar();
+    if (archiveOldRootStatus){
+      archiveOldRootStatus.textContent = moved === 0
+        ? `No folderless chats older than ${days} days. Archive is ready.`
+        : `Moved ${moved} folderless chat${moved === 1 ? '' : 's'} to Archive.`;
+    }
+  }catch(err){
+    if (archiveOldRootStatus) archiveOldRootStatus.textContent = 'Archive failed: ' + (err?.message || err);
+  }finally{
+    archiveOldRootBtn.disabled = false;
+    archiveOldRootBtn.textContent = previousLabel || 'Move old folderless chats to archive';
+  }
+});
+
 const renderWebSettingsUI = ()=>{
   const locked = !!(state.perms.inheritGlobalWeb && String(state.user?.role || 'user') === 'user');
   if (webInheritNote) webInheritNote.classList.toggle('hidden', !locked);
@@ -2643,14 +3773,14 @@ const renderWebSettingsUI = ()=>{
 
 settingWebFetchMaxChars?.addEventListener('change', async ()=>{
   if (state.perms.inheritGlobalWeb && String(state.user?.role || 'user') === 'user') { renderWebSettingsUI(); return; }
-  state.ui.webFetchMaxChars = normalizeWebLimit(settingWebFetchMaxChars.value, 20000);
+  state.ui.webFetchMaxChars = normalizeWebLimit(settingWebFetchMaxChars.value, 50000);
   if (settingWebFetchMaxChars) settingWebFetchMaxChars.value = String(state.ui.webFetchMaxChars);
   try { await api('settings_save', { web_fetch_max_chars: state.ui.webFetchMaxChars }); } catch(_){ /* ignore */ }
 });
 
 settingWebToolMaxChars?.addEventListener('change', async ()=>{
   if (state.perms.inheritGlobalWeb && String(state.user?.role || 'user') === 'user') { renderWebSettingsUI(); return; }
-  state.ui.webToolMaxChars = normalizeWebLimit(settingWebToolMaxChars.value, 12000);
+  state.ui.webToolMaxChars = normalizeWebLimit(settingWebToolMaxChars.value, 60000);
   if (settingWebToolMaxChars) settingWebToolMaxChars.value = String(state.ui.webToolMaxChars);
   try { await api('settings_save', { web_tool_max_chars: state.ui.webToolMaxChars }); } catch(_){ /* ignore */ }
 });
@@ -2660,6 +3790,7 @@ const isSearchConfigured = ()=>{
   const prov = String(state.ui.searchProvider || 'serper');
   if (prov === 'serper') return !!String(state.ui.serperApiKey || '').trim();
   if (prov === 'brave') return !!String(state.ui.braveApiKey || '').trim();
+  if (prov === 'exa') return !!String(state.ui.exaApiKey || '').trim();
   if (prov === 'custom') return !!String(state.ui.searchCustomUrl || '').trim();
   if (prov === 'searchngx') return !!String(state.ui.searchNgxUrl || '').trim();
   return false;
@@ -2674,13 +3805,14 @@ const renderSearchSettingsUI = ()=>{
   // Lock down search configuration fields when inherited globally.
   const setDis = (el, dis)=>{ try{ if(el) el.disabled = !!dis; }catch(_){ } };
   [
-    settingSearchProvider, settingSerperKey, settingBraveKey, settingSearchCustomUrl, settingSearchCustomNewsUrl,
+    settingSearchProvider, settingSerperKey, settingBraveKey, settingExaKey, settingSearchCustomUrl, settingSearchCustomNewsUrl,
     settingSearchCustomAllowPrivate, settingSearchCustomKey, settingSearchNgxUrl, settingSearchNgxAllowPrivate,
     settingSearchNgxKey, settingSearchGl, settingSearchHl, settingSearchNum
   ].forEach(el=> setDis(el, locked));
   if (searchCustomHint) searchCustomHint.classList.toggle('hidden', prov !== 'custom');
   if (searchSerperFields) searchSerperFields.classList.toggle('hidden', prov !== 'serper');
   if (searchBraveFields) searchBraveFields.classList.toggle('hidden', prov !== 'brave');
+  if (searchExaFields) searchExaFields.classList.toggle('hidden', prov !== 'exa');
   if (searchCustomFields) searchCustomFields.classList.toggle('hidden', prov !== 'custom');
   if (searchNgxFields) searchNgxFields.classList.toggle('hidden', prov !== 'searchngx');
 
@@ -2709,6 +3841,12 @@ settingSerperKey?.addEventListener('change', async ()=>{
 settingBraveKey?.addEventListener('change', async ()=>{
   state.ui.braveApiKey = String(settingBraveKey.value || '');
   await saveSearchSettings({ brave_api_key: state.ui.braveApiKey });
+  renderSearchSettingsUI();
+});
+
+settingExaKey?.addEventListener('change', async ()=>{
+  state.ui.exaApiKey = String(settingExaKey.value || '');
+  await saveSearchSettings({ exa_api_key: state.ui.exaApiKey });
   renderSearchSettingsUI();
 });
 
@@ -2768,7 +3906,458 @@ settingSearchNum?.addEventListener('change', saveSearchLocale);
 
 
 
+// RAG settings
+const normalizeRagTopK = (val)=>{
+  const n = parseInt(String(val ?? ''), 10);
+  if (!Number.isFinite(n)) return 8;
+  return Math.max(1, Math.min(64, n));
+};
+const normalizeRagTimeout = (val)=>{
+  const n = parseInt(String(val ?? ''), 10);
+  if (!Number.isFinite(n)) return 180;
+  return Math.max(5, Math.min(3600, n));
+};
+const normalizeRagMode = (val, fallback='hybrid')=>{
+  const fb = ['dense','hybrid','precise'].includes(String(fallback || '').toLowerCase()) ? String(fallback).toLowerCase() : 'hybrid';
+  const mode = String(val ?? '').toLowerCase().trim();
+  return ['dense','hybrid','precise'].includes(mode) ? mode : fb;
+};
+const normalizeChatRagMode = (val)=>{
+  const mode = String(val ?? 'default').toLowerCase().trim();
+  return ['default','dense','hybrid','precise'].includes(mode) ? mode : 'default';
+};
+const effectiveRagMode = ()=>{
+  const chatMode = normalizeChatRagMode(state.webtools?.rag_mode);
+  return chatMode === 'default' ? normalizeRagMode(state.ui?.ragDefaultMode, 'hybrid') : normalizeRagMode(chatMode, 'hybrid');
+};
+const ragModeLabel = (mode)=>({dense:'Fast', hybrid:'Hybrid', precise:'Precise'}[normalizeRagMode(mode, 'hybrid')] || 'Hybrid');
+const setRagSettingsStatus = (text, isError=false)=>{
+  if (!settingRagStatus) return;
+  settingRagStatus.textContent = String(text || '');
+  settingRagStatus.style.color = isError ? 'var(--danger, #c33)' : '';
+};
+
+let ragCapabilityNotice = null;
+const showRagCapabilityNotice = (title, detail='')=>{
+  ragCapabilityNotice?.remove();
+  const el = document.createElement('div');
+  el.className = 'rag-capability-notice';
+  el.setAttribute('role', 'status');
+  el.innerHTML = `<div class="rag-capability-notice-copy"><b>${esc(String(title || 'RAG'))}</b><span>${esc(String(detail || ''))}</span></div><button type="button" class="rag-capability-notice-close" title="Dismiss" aria-label="Dismiss">×</button>`;
+  document.body.appendChild(el);
+  el.querySelector('.rag-capability-notice-close')?.addEventListener('click', ()=>{
+    if (ragCapabilityNotice === el) ragCapabilityNotice = null;
+    el.remove();
+  });
+  ragCapabilityNotice = el;
+};
+const ragCapabilityKey = (chat = state.currentChat)=> String(chat?.id || '__draft__');
+const currentRagCapabilities = (chat = state.currentChat)=> state.ragCapabilities.get(ragCapabilityKey(chat)) || null;
+const clearRagCapabilityCache = ()=>{
+  state.ragCapabilities.clear();
+  state.ragCapabilityPending.clear();
+};
+const ensureRagCapabilities = async (chat = state.currentChat)=>{
+  if (!state.ui.ragAvailable) return null;
+  const key = ragCapabilityKey(chat);
+  if (state.ragCapabilities.has(key)) return state.ragCapabilities.get(key);
+  if (state.ragCapabilityPending.has(key)) return state.ragCapabilityPending.get(key);
+
+  const pending = (async()=>{
+    try {
+      const r = await api('rag_capabilities');
+      const raw = (r && typeof r.capabilities === 'object' && r.capabilities) ? r.capabilities : {};
+      const caps = {
+        dense: raw.dense !== false,
+        hybrid: raw.hybrid !== false,
+        precise: raw.precise === true,
+        checked: true,
+        error: ''
+      };
+      state.ragCapabilities.set(key, caps);
+      if (!caps.precise) {
+        showRagCapabilityNotice('Precise RAG unavailable', 'The reranker is not configured in ragd. Fast and Hybrid remain available.');
+      }
+      return caps;
+    } catch (err) {
+      const caps = {dense:true, hybrid:true, precise:false, checked:false, error:String(err?.message || err || 'Capability check failed')};
+      state.ragCapabilities.set(key, caps);
+      showRagCapabilityNotice('Could not check RAG capabilities', 'ragd /v1/status could not be read. Precise is hidden until the server can be checked.');
+      return caps;
+    } finally {
+      state.ragCapabilityPending.delete(key);
+      renderWebTools();
+    }
+  })();
+  state.ragCapabilityPending.set(key, pending);
+  renderWebTools();
+  return pending;
+};
+const renderRagSettingsUI = ()=>{
+  const isSuper = String(state.user?.role || 'user') === 'superadmin';
+  [settingRagUrl, settingRagTopK, settingRagTimeoutSec, settingRagTest].forEach(el=>{
+    try { if (el) el.disabled = !isSuper; } catch(_) {}
+  });
+  if (settingRagAutoEnable) settingRagAutoEnable.disabled = false;
+  if (settingRagDefaultMode) settingRagDefaultMode.disabled = false;
+  if (ragSuperNote) {
+    ragSuperNote.textContent = isSuper
+      ? 'RAG infrastructure is global. A configured server URL makes it available; automatic activation and the retrieval default below are personal.'
+      : 'RAG infrastructure is managed globally by a superadmin. Automatic activation and your retrieval default below are personal.';
+  }
+  if (!isSuper) setRagSettingsStatus(state.ui.ragAvailable ? 'RAG service available' : 'RAG service unavailable');
+  renderWebTools();
+};
+const saveRagSettingsFromForm = async ()=>{
+  const isSuper = String(state.user?.role || 'user') === 'superadmin';
+  if (!isSuper) return false;
+  state.ui.ragUrl = String(settingRagUrl?.value || '').trim().replace(/\/+$/, '');
+  state.ui.ragTopK = normalizeRagTopK(settingRagTopK?.value);
+  state.ui.ragTimeoutSec = normalizeRagTimeout(settingRagTimeoutSec?.value);
+  if (settingRagTopK) settingRagTopK.value = String(state.ui.ragTopK);
+  if (settingRagTimeoutSec) settingRagTimeoutSec.value = String(state.ui.ragTimeoutSec);
+  try {
+    await api('settings_save', {
+      rag_url: state.ui.ragUrl,
+      rag_top_k: state.ui.ragTopK,
+      rag_timeout_sec: state.ui.ragTimeoutSec
+    });
+    state.ui.ragAvailable = !!state.ui.ragUrl;
+    clearRagCapabilityCache();
+    const hasOverride = !!(state.currentChat?.meta && state.currentChat.meta.webtools);
+    if (!hasOverride) {
+      state.webtools.rag = !!state.ui.ragAvailable && !!state.ui.ragAutoEnable;
+      state.webtools.rag_mode = 'default';
+    }
+    if (!state.ui.ragAvailable && state.webtools.rag) {
+      state.webtools.rag = false;
+      persistCurrentWebTools();
+    }
+    setRagSettingsStatus('Saved');
+    renderRagSettingsUI();
+    return true;
+  } catch (err) {
+    setRagSettingsStatus(err?.message || String(err), true);
+    return false;
+  }
+};
+
+settingRagDefaultMode?.addEventListener('change', async ()=>{
+  state.ui.ragDefaultMode = normalizeRagMode(settingRagDefaultMode?.value, 'hybrid');
+  if (settingRagDefaultMode) settingRagDefaultMode.value = state.ui.ragDefaultMode;
+  try {
+    await api('settings_save', {rag_default_mode: state.ui.ragDefaultMode});
+    setRagSettingsStatus('Saved');
+    renderWebTools();
+  } catch (err) {
+    setRagSettingsStatus(err?.message || String(err), true);
+  }
+});
+
+settingRagAutoEnable?.addEventListener('change', async ()=>{
+  state.ui.ragAutoEnable = !!settingRagAutoEnable.checked;
+  try {
+    await api('settings_save', {rag_auto_enable: state.ui.ragAutoEnable ? 1 : 0});
+    setRagSettingsStatus('Saved');
+  } catch (err) {
+    setRagSettingsStatus(err?.message || String(err), true);
+    return;
+  }
+  const hasOverride = !!(state.currentChat?.meta && state.currentChat.meta.webtools);
+  if (!hasOverride) {
+    state.webtools.rag = !!state.ui.ragAvailable && !!state.ui.ragAutoEnable;
+    state.webtools.rag_mode = 'default';
+    renderWebTools();
+  }
+});
+settingRagUrl?.addEventListener('change', saveRagSettingsFromForm);
+settingRagTopK?.addEventListener('change', saveRagSettingsFromForm);
+settingRagTimeoutSec?.addEventListener('change', saveRagSettingsFromForm);
+settingRagTest?.addEventListener('click', async ()=>{
+  setRagSettingsStatus('Testing…');
+  const saved = await saveRagSettingsFromForm();
+  if (!saved) return;
+  try {
+    const r = await api('rag_test');
+    const st = r?.status || {};
+    const chunks = Number(st.indexed_chunks || 0);
+    const dim = Number(st.dimension || 0);
+    setRagSettingsStatus(`Connected · ${String(st.index || 'ragd')} · ${chunks} chunks${dim ? ` · ${dim}D` : ''}`);
+  } catch (err) {
+    setRagSettingsStatus(err?.message || String(err), true);
+  }
+});
+
 // Image settings
+const comfyProfileId = ()=>{
+  try {
+    if (globalThis.crypto?.getRandomValues) {
+      const a = new Uint32Array(2);
+      globalThis.crypto.getRandomValues(a);
+      return `comfy_${a[0].toString(16)}${a[1].toString(16)}`;
+    }
+  } catch(_){ }
+  return `comfy_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,10)}`;
+};
+
+const comfyNum = (v, fallback)=>{
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const comfyNormalizeProfile = (p, fallbackId='')=>{
+  const x = (p && typeof p === 'object') ? p : {};
+  let id = String(x.id || fallbackId || '').trim().replace(/[^A-Za-z0-9_.:-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 100);
+  if (!id) id = comfyProfileId();
+  let name = String(x.name || '').trim();
+  if (!name) name = 'ComfyUI';
+  return {
+    id,
+    name,
+    url: String(x.url || ''),
+    workflow_json: String(x.workflow_json || ''),
+    bindings_json: String(x.bindings_json || ''),
+    binding_plan_json: String(x.binding_plan_json || ''),
+    seed: Math.trunc(comfyNum(x.seed, -1)),
+    steps: Math.max(1, Math.min(250, Math.trunc(comfyNum(x.steps, 20)))),
+    guidance: comfyNum(x.guidance, 3.5),
+    width: Math.max(64, Math.min(4096, Math.trunc(comfyNum(x.width, 512)))),
+    height: Math.max(64, Math.min(4096, Math.trunc(comfyNum(x.height, 512)))),
+    batch: Math.max(1, Math.min(16, Math.trunc(comfyNum(x.batch, 1)))),
+    timeout_sec: Math.max(30, Math.min(3600, Math.trunc(comfyNum(x.timeout_sec, 900)))),
+    apply_defaults: x.apply_defaults === true || Number(x.apply_defaults) === 1
+  };
+};
+
+const comfyLegacyProfileFromState = ()=> comfyNormalizeProfile({
+  id: 'default',
+  name: 'Default',
+  url: state.ui.imageComfyUrl || '',
+  workflow_json: state.ui.imageComfyWorkflow || '',
+  bindings_json: state.ui.imageComfyBindings || '',
+  seed: state.ui.imageComfySeed ?? -1,
+  steps: state.ui.imageComfySteps ?? 20,
+  guidance: state.ui.imageComfyGuidance ?? 3.5,
+  width: state.ui.imageComfyWidth ?? 512,
+  height: state.ui.imageComfyHeight ?? 512,
+  batch: state.ui.imageComfyBatch ?? 1,
+  timeout_sec: state.ui.imageComfyTimeout ?? 900,
+  apply_defaults: !!state.ui.imageComfyApplyDefaults
+}, 'default');
+
+const ensureComfyProfiles = ()=>{
+  let profiles = Array.isArray(state.ui.imageComfyProfiles) ? state.ui.imageComfyProfiles : [];
+  profiles = profiles.filter(p=> p && typeof p === 'object').slice(0, 50).map((p,i)=> comfyNormalizeProfile(p, `comfy_${i+1}`));
+  if (!profiles.length) profiles = [comfyLegacyProfileFromState()];
+
+  // Keep IDs unique so the selected profile is deterministic even after hand-edited JSON/imports.
+  const seen = new Set();
+  for (const p of profiles) {
+    if (!p.id || seen.has(p.id)) p.id = comfyProfileId();
+    seen.add(p.id);
+  }
+  state.ui.imageComfyProfiles = profiles;
+
+  let selected = String(state.ui.imageComfyProfileId || '').trim();
+  if (!profiles.some(p=>p.id === selected)) selected = profiles[0].id;
+  state.ui.imageComfyProfileId = selected;
+  return profiles;
+};
+
+const activeComfyProfile = ()=>{
+  const profiles = ensureComfyProfiles();
+  return profiles.find(p=>p.id === state.ui.imageComfyProfileId) || profiles[0];
+};
+
+const syncComfyStateFromActiveProfile = ()=>{
+  const p = activeComfyProfile();
+  if (!p) return;
+  state.ui.imageComfyUrl = String(p.url || '');
+  state.ui.imageComfyWorkflow = String(p.workflow_json || '');
+  state.ui.imageComfyBindings = String(p.bindings_json || '');
+  state.ui.imageComfySeed = Math.trunc(comfyNum(p.seed, -1));
+  state.ui.imageComfySteps = Math.max(1, Math.trunc(comfyNum(p.steps, 20)));
+  state.ui.imageComfyGuidance = comfyNum(p.guidance, 3.5);
+  state.ui.imageComfyWidth = Math.max(64, Math.trunc(comfyNum(p.width, 512)));
+  state.ui.imageComfyHeight = Math.max(64, Math.trunc(comfyNum(p.height, 512)));
+  state.ui.imageComfyBatch = Math.max(1, Math.trunc(comfyNum(p.batch, 1)));
+  state.ui.imageComfyTimeout = Math.max(30, Math.trunc(comfyNum(p.timeout_sec, 900)));
+  state.ui.imageComfyApplyDefaults = !!p.apply_defaults;
+};
+
+const captureComfyFormIntoActiveProfile = ()=>{
+  const p = activeComfyProfile();
+  if (!p) return null;
+  p.url = String(settingImageComfyUrl?.value ?? state.ui.imageComfyUrl ?? '').trim();
+  const nextWorkflow = String(settingImageComfyWorkflow?.value ?? state.ui.imageComfyWorkflow ?? '');
+  const nextBindings = String(settingImageComfyBindings?.value ?? state.ui.imageComfyBindings ?? '');
+  if (nextWorkflow !== String(p.workflow_json || '') || nextBindings !== String(p.bindings_json || '')) p.binding_plan_json = '';
+  p.workflow_json = nextWorkflow;
+  p.bindings_json = nextBindings;
+  p.seed = Math.trunc(comfyNum(settingImageComfySeed?.value, state.ui.imageComfySeed ?? -1));
+  p.steps = Math.max(1, Math.min(250, Math.trunc(comfyNum(settingImageComfySteps?.value, state.ui.imageComfySteps ?? 20))));
+  p.guidance = comfyNum(settingImageComfyGuidance?.value, state.ui.imageComfyGuidance ?? 3.5);
+  p.width = Math.max(64, Math.min(4096, Math.trunc(comfyNum(settingImageComfyWidth?.value, state.ui.imageComfyWidth ?? 512))));
+  p.height = Math.max(64, Math.min(4096, Math.trunc(comfyNum(settingImageComfyHeight?.value, state.ui.imageComfyHeight ?? 512))));
+  p.batch = Math.max(1, Math.min(16, Math.trunc(comfyNum(settingImageComfyBatch?.value, state.ui.imageComfyBatch ?? 1))));
+  p.timeout_sec = Math.max(30, Math.min(3600, Math.trunc(comfyNum(settingImageComfyTimeout?.value, state.ui.imageComfyTimeout ?? 900))));
+  p.apply_defaults = !!(settingImageComfyApplyDefaults?.checked ?? state.ui.imageComfyApplyDefaults);
+  syncComfyStateFromActiveProfile();
+  return p;
+};
+
+const comfyProfilesJson = ()=> JSON.stringify(ensureComfyProfiles());
+
+const imageEditComfyProfileId = ()=>{
+  try {
+    if (window.crypto?.getRandomValues) {
+      const a = new Uint32Array(2);
+      window.crypto.getRandomValues(a);
+      return `comfy_edit_${a[0].toString(16)}${a[1].toString(16)}`;
+    }
+  } catch(_){}
+  return `comfy_edit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,10)}`;
+};
+const imageEditComfyNormalizeProfile = (p, fallbackId='')=>{
+  const x = (p && typeof p === 'object') ? p : {};
+  let id = String(x.id || fallbackId || '').trim();
+  id = id.replace(/[^A-Za-z0-9_.:-]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!id) id = imageEditComfyProfileId();
+  if (id.length > 100) id = id.slice(0,100);
+  let name = String(x.name || '').trim();
+  if (!name) name = 'ComfyUI Edit';
+  if (name.length > 240) name = name.slice(0,240);
+  const mp = parseFloatSafe(x.megapixels, 1);
+  return {
+    id,
+    name,
+    url: String(x.url || '').trim().slice(0,2048),
+    workflow_json: String(x.workflow_json || ''),
+    bindings_json: String(x.bindings_json || ''),
+    binding_plan_json: String(x.binding_plan_json || ''),
+    seed: Math.trunc(comfyNum(x.seed, -1)),
+    steps: Math.max(1, Math.min(250, Math.trunc(comfyNum(x.steps, 20)))),
+    guidance: comfyNum(x.guidance, 3.5),
+    width: Math.max(64, Math.min(4096, Math.trunc(comfyNum(x.width, 1024)))),
+    height: Math.max(64, Math.min(4096, Math.trunc(comfyNum(x.height, 1024)))),
+    batch: Math.max(1, Math.min(16, Math.trunc(comfyNum(x.batch, 1)))),
+    megapixels: Math.max(0.1, Math.min(64, Number.isFinite(mp) ? mp : 1)),
+    timeout_sec: Math.max(30, Math.min(3600, Math.trunc(comfyNum(x.timeout_sec, 900)))),
+    apply_defaults: !!x.apply_defaults,
+  };
+};
+const imageEditComfyLegacyProfileFromState = ()=> imageEditComfyNormalizeProfile({
+  id: state.ui.imageEditComfyProfileId || '',
+  name: 'ComfyUI Edit',
+  url: state.ui.imageEditComfyUrl || '',
+  workflow_json: state.ui.imageEditComfyWorkflow || '',
+  bindings_json: state.ui.imageEditComfyBindings || '',
+  seed: state.ui.imageEditComfySeed ?? -1,
+  steps: state.ui.imageEditComfySteps ?? 20,
+  guidance: state.ui.imageEditComfyGuidance ?? 3.5,
+  width: state.ui.imageEditComfyWidth ?? 1024,
+  height: state.ui.imageEditComfyHeight ?? 1024,
+  batch: state.ui.imageEditComfyBatch ?? 1,
+  megapixels: state.ui.imageEditComfyMegapixels ?? 1,
+  timeout_sec: state.ui.imageEditComfyTimeout ?? 900,
+  apply_defaults: !!state.ui.imageEditComfyApplyDefaults,
+});
+const ensureImageEditComfyProfiles = ()=>{
+  let profiles = Array.isArray(state.ui.imageEditComfyProfiles) ? state.ui.imageEditComfyProfiles : [];
+  profiles = profiles.filter(p=> p && typeof p === 'object').slice(0,50).map((p,i)=> imageEditComfyNormalizeProfile(p, `comfy_edit_${i+1}`));
+  if (!profiles.length) profiles = [imageEditComfyLegacyProfileFromState()];
+  const seen = new Set();
+  profiles.forEach(p=>{
+    if (!p.id || seen.has(p.id)) p.id = imageEditComfyProfileId();
+    seen.add(p.id);
+  });
+  state.ui.imageEditComfyProfiles = profiles;
+  let selected = String(state.ui.imageEditComfyProfileId || '').trim();
+  if (!profiles.some(p=>p.id === selected)) selected = profiles[0]?.id || '';
+  state.ui.imageEditComfyProfileId = selected;
+  return profiles;
+};
+const activeImageEditComfyProfile = ()=>{
+  const profiles = ensureImageEditComfyProfiles();
+  return profiles.find(p=>p.id === state.ui.imageEditComfyProfileId) || profiles[0];
+};
+const syncImageEditComfyStateFromActiveProfile = ()=>{
+  const p = activeImageEditComfyProfile();
+  if (!p) return;
+  state.ui.imageEditComfyUrl = String(p.url || '');
+  state.ui.imageEditComfyWorkflow = String(p.workflow_json || '');
+  state.ui.imageEditComfyBindings = String(p.bindings_json || '');
+  state.ui.imageEditComfySeed = Math.trunc(comfyNum(p.seed, -1));
+  state.ui.imageEditComfySteps = Math.max(1, Math.trunc(comfyNum(p.steps, 20)));
+  state.ui.imageEditComfyGuidance = comfyNum(p.guidance, 3.5);
+  state.ui.imageEditComfyWidth = Math.max(64, Math.trunc(comfyNum(p.width, 1024)));
+  state.ui.imageEditComfyHeight = Math.max(64, Math.trunc(comfyNum(p.height, 1024)));
+  state.ui.imageEditComfyBatch = Math.max(1, Math.trunc(comfyNum(p.batch, 1)));
+  state.ui.imageEditComfyMegapixels = Math.max(0.1, parseFloatSafe(p.megapixels, 1));
+  state.ui.imageEditComfyTimeout = Math.max(30, Math.trunc(comfyNum(p.timeout_sec, 900)));
+  state.ui.imageEditComfyApplyDefaults = !!p.apply_defaults;
+};
+const captureImageEditComfyFormIntoActiveProfile = ()=>{
+  const p = activeImageEditComfyProfile();
+  if (!p) return;
+  p.url = String(settingImageEditComfyUrl?.value ?? state.ui.imageEditComfyUrl ?? '').trim();
+  const nextWorkflow = String(settingImageEditComfyWorkflow?.value ?? state.ui.imageEditComfyWorkflow ?? '');
+  const nextBindings = String(settingImageEditComfyBindings?.value ?? state.ui.imageEditComfyBindings ?? '');
+  if (nextWorkflow !== String(p.workflow_json || '') || nextBindings !== String(p.bindings_json || '')) p.binding_plan_json = '';
+  p.workflow_json = nextWorkflow;
+  p.bindings_json = nextBindings;
+  p.seed = Math.trunc(comfyNum(settingImageEditComfySeed?.value, state.ui.imageEditComfySeed ?? -1));
+  p.steps = Math.max(1, Math.min(250, Math.trunc(comfyNum(settingImageEditComfySteps?.value, state.ui.imageEditComfySteps ?? 20))));
+  p.guidance = comfyNum(settingImageEditComfyGuidance?.value, state.ui.imageEditComfyGuidance ?? 3.5);
+  p.width = Math.max(64, Math.min(4096, Math.trunc(comfyNum(settingImageEditComfyWidth?.value, state.ui.imageEditComfyWidth ?? 1024))));
+  p.height = Math.max(64, Math.min(4096, Math.trunc(comfyNum(settingImageEditComfyHeight?.value, state.ui.imageEditComfyHeight ?? 1024))));
+  p.batch = Math.max(1, Math.min(16, Math.trunc(comfyNum(settingImageEditComfyBatch?.value, state.ui.imageEditComfyBatch ?? 1))));
+  p.megapixels = Math.max(0.1, Math.min(64, parseFloatSafe(settingImageEditComfyMegapixels?.value, state.ui.imageEditComfyMegapixels ?? 1)));
+  p.timeout_sec = Math.max(30, Math.min(3600, Math.trunc(comfyNum(settingImageEditComfyTimeout?.value, state.ui.imageEditComfyTimeout ?? 900))));
+  p.apply_defaults = !!(settingImageEditComfyApplyDefaults?.checked ?? state.ui.imageEditComfyApplyDefaults);
+  syncImageEditComfyStateFromActiveProfile();
+};
+const imageEditComfyProfilesJson = ()=> JSON.stringify(ensureImageEditComfyProfiles());
+let imageEditComfyProfileSaveChain = Promise.resolve();
+const persistImageEditComfyProfiles = (extra={})=>{
+  const patch = {
+    image_edit_comfyui_profiles_json: imageEditComfyProfilesJson(),
+    image_edit_comfyui_profile_id: String(state.ui.imageEditComfyProfileId || ''),
+    ...extra,
+  };
+  imageEditComfyProfileSaveChain = imageEditComfyProfileSaveChain.catch(()=>{}).then(()=> saveImageSettings(patch));
+  return imageEditComfyProfileSaveChain;
+};
+const renderImageEditComfyProfileOptions = ()=>{
+  if (!settingImageEditComfyProfile) return;
+  const profiles = ensureImageEditComfyProfiles();
+  const selected = String(state.ui.imageEditComfyProfileId || profiles[0]?.id || '');
+  settingImageEditComfyProfile.innerHTML = profiles.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  settingImageEditComfyProfile.value = selected;
+};
+
+let comfyProfileSaveChain = Promise.resolve();
+
+const persistComfyProfiles = (extra={})=>{
+  // Snapshot now and serialize writes. A textarea blur followed immediately by a
+  // profile switch must not let an older request overwrite the newer selection.
+  const patch = {
+    image_comfyui_profiles_json: comfyProfilesJson(),
+    image_comfyui_profile_id: String(state.ui.imageComfyProfileId || ''),
+    ...extra
+  };
+  comfyProfileSaveChain = comfyProfileSaveChain.catch(()=>{}).then(()=> saveImageSettings(patch));
+  return comfyProfileSaveChain;
+};
+
+const renderComfyProfileOptions = ()=>{
+  if (!settingImageComfyProfile) return;
+  const profiles = ensureComfyProfiles();
+  const selected = String(state.ui.imageComfyProfileId || profiles[0]?.id || '');
+  settingImageComfyProfile.innerHTML = profiles.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  settingImageComfyProfile.value = selected;
+};
+
 const isImageConfigured = ()=>{
   const prov = String(state.ui.imageProvider || 'openai');
   if (prov === 'openai') return !!String(state.ui.imageApiKey || '').trim();
@@ -2782,6 +4371,58 @@ const isImageConfigured = ()=>{
   return false;
 };
 
+
+const renderOpenaiImageModelOptions = ()=>{
+  if (!settingImageModel) return;
+  const cur = String(state.ui.imageModel || 'gpt-image-2');
+  const models = Array.isArray(state.ui.imageOpenaiModels) ? state.ui.imageOpenaiModels : [];
+  const items = models.length ? models : [{ id: cur }];
+  const seen = new Set();
+  let html = '';
+  for (const m of items){
+    const id = String(m?.id || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    html += `<option value="${esc(id)}">${esc(id)}</option>`;
+  }
+  // Preserve a previously configured/custom model even if /models does not return it
+  // for the current key/project, or if OpenAI changes its image-model naming scheme.
+  if (cur && !seen.has(cur)) html = `<option value="${esc(cur)}">${esc(cur)}</option>` + html;
+  settingImageModel.innerHTML = html;
+  settingImageModel.value = cur;
+  if (settingImageModelsStatus) {
+    if (state.ui.imageOpenaiModelsBusy) settingImageModelsStatus.textContent = 'Loading OpenAI image models…';
+    else if (state.ui.imageOpenaiModelsError) settingImageModelsStatus.textContent = state.ui.imageOpenaiModelsError;
+    else if (models.length) settingImageModelsStatus.textContent = `${models.length} image model${models.length === 1 ? '' : 's'} loaded from /models.`;
+    else settingImageModelsStatus.textContent = 'OpenAI image models will be loaded from /models. The API exposes basic model metadata only, so image model IDs are filtered by naming pattern.';
+  }
+};
+
+const maybeFetchOpenaiImageModels = async (force=false)=>{
+  if (String(state.ui.imageProvider || 'openai') !== 'openai') return;
+  if (state.ui.imageOpenaiModelsBusy) return;
+  if (!force && Array.isArray(state.ui.imageOpenaiModels) && state.ui.imageOpenaiModels.length) return;
+  if (!force && String(state.ui.imageOpenaiModelsError || '').trim()) return;
+  // Without a key the server request cannot succeed. Keep the currently configured
+  // model visible instead of producing an error on every settings render.
+  if (!String(state.ui.imageApiKey || '').trim()) {
+    renderOpenaiImageModelOptions();
+    return;
+  }
+  state.ui.imageOpenaiModelsBusy = true;
+  state.ui.imageOpenaiModelsError = '';
+  renderOpenaiImageModelOptions();
+  try{
+    const r = await api('image_openai_models');
+    state.ui.imageOpenaiModels = Array.isArray(r?.models) ? r.models : [];
+  }catch(ex){
+    state.ui.imageOpenaiModels = [];
+    state.ui.imageOpenaiModelsError = ex?.message || 'Could not load OpenAI image models.';
+  }finally{
+    state.ui.imageOpenaiModelsBusy = false;
+    renderOpenaiImageModelOptions();
+  }
+};
 
 const renderOpenrouterImageModelOptions = ()=>{
   if (!settingImageOpenrouterModel) return;
@@ -2825,6 +4466,14 @@ const maybeFetchOpenrouterImageModels = async (force=false)=>{
   }
 };
 
+const renderImageGenerationProviderFields = ()=>{
+  const prov = String(state.ui.imageProvider || 'openai');
+  if (imageOpenaiFields) imageOpenaiFields.classList.toggle('hidden', prov !== 'openai');
+  if (imageOpenrouterFields) imageOpenrouterFields.classList.toggle('hidden', prov !== 'openrouter');
+  if (imageSdCppFields) imageSdCppFields.classList.toggle('hidden', prov !== 'sdcpp');
+  if (imageComfyFields) imageComfyFields.classList.toggle('hidden', prov !== 'comfyui');
+};
+
 const renderImageSettingsUI = ()=>{
   const locked = !!(state.perms.inheritGlobalImage && String(state.user?.role || 'user') === 'user');
   if (imageInheritNote) imageInheritNote.classList.toggle('hidden', !locked);
@@ -2836,12 +4485,18 @@ const renderImageSettingsUI = ()=>{
 
   [
     // Per-user toggles must remain editable even when Image is inherited globally.
-    settingImageProvider, settingImageBaseUrl, settingImageApiKey, settingImageModel,
+    settingImageProvider, settingImageBaseUrl, settingImageApiKey, settingImageModel, settingImageModelsRefresh,
     settingImageOpenrouterBaseUrl, settingImageOpenrouterApiKey, settingImageOpenrouterModel, settingImageOpenrouterModelsRefresh,
     settingImageSize, settingImageQuality, settingImageBackground, settingImageOutputFormat,
+    settingImageComfyProfile, settingImageComfyProfileNew, settingImageComfyProfileDuplicate, settingImageComfyProfileRename, settingImageComfyProfileDelete,
     settingImageComfyUrl, settingImageComfyWorkflow, settingImageComfyBindings, settingImageComfyAutodetect,
     settingImageComfySeed, settingImageComfySteps, settingImageComfyGuidance, settingImageComfyWidth, settingImageComfyHeight,
-    settingImageComfyBatch, settingImageComfyTimeout, settingImageComfyApplyDefaults
+    settingImageComfyBatch, settingImageComfyTimeout, settingImageComfyApplyDefaults,
+    settingImageModeGeneration, settingImageModeEditing,
+    settingImageEditComfyProfile, settingImageEditComfyProfileNew, settingImageEditComfyProfileDuplicate, settingImageEditComfyProfileRename, settingImageEditComfyProfileDelete,
+    settingImageEditComfyUrl, settingImageEditComfyWorkflow, settingImageEditComfyBindings, settingImageEditComfyAutodetect,
+    settingImageEditComfySeed, settingImageEditComfySteps, settingImageEditComfyGuidance, settingImageEditComfyWidth, settingImageEditComfyHeight,
+    settingImageEditComfyBatch, settingImageEditComfyMegapixels, settingImageEditComfyTimeout, settingImageEditComfyApplyDefaults
   ].forEach(el=>setDisabled(el, locked));
 
   if (settingImageAutoEnable) settingImageAutoEnable.checked = !!state.ui.imageAutoEnable;
@@ -2849,7 +4504,7 @@ const renderImageSettingsUI = ()=>{
   if (settingImageProvider) settingImageProvider.value = String(state.ui.imageProvider || 'openai');
   if (settingImageBaseUrl) settingImageBaseUrl.value = String(state.ui.imageBaseUrl || 'https://api.openai.com/v1');
   if (settingImageApiKey && settingImageApiKey !== document.activeElement) settingImageApiKey.value = String(state.ui.imageApiKey || '');
-  if (settingImageModel) settingImageModel.value = String(state.ui.imageModel || 'gpt-image-2');
+  renderOpenaiImageModelOptions();
   if (settingImageOpenrouterBaseUrl) settingImageOpenrouterBaseUrl.value = String(state.ui.imageOpenrouterBaseUrl || 'https://openrouter.ai/api/v1');
   if (settingImageOpenrouterApiKey && settingImageOpenrouterApiKey !== document.activeElement) settingImageOpenrouterApiKey.value = String(state.ui.imageOpenrouterApiKey || '');
   renderOpenrouterImageModelOptions();
@@ -2858,12 +4513,25 @@ const renderImageSettingsUI = ()=>{
   if (settingImageBackground) settingImageBackground.value = String(state.ui.imageBackground || 'auto');
   if (settingImageOutputFormat) settingImageOutputFormat.value = String(state.ui.imageOutputFormat || 'png');
 
+  const mode = String(state.ui.imageSettingsMode || 'generation');
+  const generationActive = mode === 'generation';
+  if (imageGenerationSettings) imageGenerationSettings.classList.toggle('hidden', !generationActive);
+  if (imageEditingSettings) imageEditingSettings.classList.toggle('hidden', generationActive);
+  if (settingImageModeGeneration) {
+    settingImageModeGeneration.classList.toggle('active', generationActive);
+    settingImageModeGeneration.setAttribute('aria-selected', generationActive ? 'true' : 'false');
+    settingImageModeGeneration.tabIndex = generationActive ? 0 : -1;
+  }
+  if (settingImageModeEditing) {
+    settingImageModeEditing.classList.toggle('active', !generationActive);
+    settingImageModeEditing.setAttribute('aria-selected', generationActive ? 'false' : 'true');
+    settingImageModeEditing.tabIndex = generationActive ? -1 : 0;
+  }
+
   const prov = String(state.ui.imageProvider || 'openai');
-  if (imageOpenaiFields) imageOpenaiFields.classList.toggle('hidden', prov !== 'openai');
-  if (imageOpenrouterFields) imageOpenrouterFields.classList.toggle('hidden', prov !== 'openrouter');
+  renderImageGenerationProviderFields();
+  if (prov === 'openai') maybeFetchOpenaiImageModels(false);
   if (prov === 'openrouter') maybeFetchOpenrouterImageModels(false);
-  if (imageSdCppFields) imageSdCppFields.classList.toggle('hidden', prov !== 'sdcpp');
-  if (imageComfyFields) imageComfyFields.classList.toggle('hidden', prov !== 'comfyui');
 
   if (settingImageSdCppBaseUrl) settingImageSdCppBaseUrl.value = String(state.ui.imageSdCppBaseUrl || 'http://127.0.0.1:1234/v1');
   if (settingImageSdCppApiKey && settingImageSdCppApiKey !== document.activeElement) settingImageSdCppApiKey.value = String(state.ui.imageSdCppApiKey || '');
@@ -2883,6 +4551,8 @@ const renderImageSettingsUI = ()=>{
   if (settingImageSdCppTimeout) settingImageSdCppTimeout.value = String(state.ui.imageSdCppTimeout ?? 900);
   if (settingImageSdCppAutoVaeTiling768) settingImageSdCppAutoVaeTiling768.checked = !!state.ui.imageSdCppAutoVaeTiling768;
 
+  renderComfyProfileOptions();
+  if (settingImageComfyProfileDelete) settingImageComfyProfileDelete.disabled = locked || ensureComfyProfiles().length <= 1;
   if (settingImageComfyUrl) settingImageComfyUrl.value = String(state.ui.imageComfyUrl || '');
   if (settingImageComfyWorkflow && settingImageComfyWorkflow !== document.activeElement) settingImageComfyWorkflow.value = String(state.ui.imageComfyWorkflow || '');
   if (settingImageComfyBindings && settingImageComfyBindings !== document.activeElement) settingImageComfyBindings.value = String(state.ui.imageComfyBindings || '');
@@ -2894,6 +4564,21 @@ const renderImageSettingsUI = ()=>{
   if (settingImageComfyBatch) settingImageComfyBatch.value = String(state.ui.imageComfyBatch ?? 1);
   if (settingImageComfyTimeout) settingImageComfyTimeout.value = String(state.ui.imageComfyTimeout ?? 900);
   if (settingImageComfyApplyDefaults) settingImageComfyApplyDefaults.checked = !!state.ui.imageComfyApplyDefaults;
+
+  renderImageEditComfyProfileOptions();
+  if (settingImageEditComfyProfileDelete) settingImageEditComfyProfileDelete.disabled = locked || ensureImageEditComfyProfiles().length <= 1;
+  if (settingImageEditComfyUrl) settingImageEditComfyUrl.value = String(state.ui.imageEditComfyUrl || '');
+  if (settingImageEditComfyWorkflow && settingImageEditComfyWorkflow !== document.activeElement) settingImageEditComfyWorkflow.value = String(state.ui.imageEditComfyWorkflow || '');
+  if (settingImageEditComfyBindings && settingImageEditComfyBindings !== document.activeElement) settingImageEditComfyBindings.value = String(state.ui.imageEditComfyBindings || '');
+  if (settingImageEditComfySeed) settingImageEditComfySeed.value = String(state.ui.imageEditComfySeed ?? -1);
+  if (settingImageEditComfySteps) settingImageEditComfySteps.value = String(state.ui.imageEditComfySteps ?? 20);
+  if (settingImageEditComfyGuidance) settingImageEditComfyGuidance.value = String(state.ui.imageEditComfyGuidance ?? 3.5);
+  if (settingImageEditComfyWidth) settingImageEditComfyWidth.value = String(state.ui.imageEditComfyWidth ?? 1024);
+  if (settingImageEditComfyHeight) settingImageEditComfyHeight.value = String(state.ui.imageEditComfyHeight ?? 1024);
+  if (settingImageEditComfyBatch) settingImageEditComfyBatch.value = String(state.ui.imageEditComfyBatch ?? 1);
+  if (settingImageEditComfyMegapixels) settingImageEditComfyMegapixels.value = String(state.ui.imageEditComfyMegapixels ?? 1);
+  if (settingImageEditComfyTimeout) settingImageEditComfyTimeout.value = String(state.ui.imageEditComfyTimeout ?? 900);
+  if (settingImageEditComfyApplyDefaults) settingImageEditComfyApplyDefaults.checked = !!state.ui.imageEditComfyApplyDefaults;
 
   // Also reflect disable state in the composer popover.
   renderWebTools();
@@ -3471,6 +5156,7 @@ settingImageAutoEnable?.addEventListener('change', async ()=>{
     state.webtools.image = !!state.ui.imageAutoEnable;
         state.webtools.document = false;
         state.webtools.custom_tools = defaultCustomToolNames();
+        state.webtools.mcp_servers = defaultMcpServerIds();
     renderWebTools();
   }
 });
@@ -3481,37 +5167,65 @@ settingVisionAutoAttachLastImage?.addEventListener('change', async ()=>{
   await saveImageSettings({ vision_auto_attach_last_image: state.ui.visionAutoAttachLastImage ? 1 : 0 });
 });
 
+let imageProviderSaveChain = Promise.resolve();
 settingImageProvider?.addEventListener('change', async ()=>{
-  state.ui.imageProvider = String(settingImageProvider.value || 'openai');
-  if (state.ui.imageProvider === 'openrouter') {
+  const provider = String(settingImageProvider.value || 'openai');
+  state.ui.imageProvider = provider;
+  if (provider === 'openai') {
+    state.ui.imageBaseUrl = String(state.ui.imageBaseUrl || 'https://api.openai.com/v1');
+  }
+  if (provider === 'openrouter') {
     state.ui.imageOpenrouterBaseUrl = String(state.ui.imageOpenrouterBaseUrl || 'https://openrouter.ai/api/v1');
     state.ui.imageOpenrouterModel = String(state.ui.imageOpenrouterModel || 'google/gemini-3-pro-image-preview');
   }
-  if (state.ui.imageProvider === 'sdcpp') {
+  if (provider === 'sdcpp') {
     state.ui.imageSdCppBaseUrl = String(state.ui.imageSdCppBaseUrl || 'http://127.0.0.1:1234/v1');
     state.ui.imageSdCppModel = String(state.ui.imageSdCppModel || 'flux-2-klein-base-4b-Q8_0.gguf');
   }
-  await saveImageSettings({ image_provider: state.ui.imageProvider });
-  renderImageSettingsUI();
-  if (state.ui.imageProvider === 'openrouter') maybeFetchOpenrouterImageModels(true);
+
+  // Provider switching is a local UI operation first. Do not wait for the
+  // settings request or rebuild the Generation/Editing tab before showing the
+  // selected provider's fields.
+  renderImageGenerationProviderFields();
+  renderWebTools();
+  if (provider === 'openai') maybeFetchOpenaiImageModels(true);
+  if (provider === 'openrouter') maybeFetchOpenrouterImageModels(true);
+
+  // Preserve user order when switching quickly (e.g. ComfyUI -> OpenRouter -> OpenAI).
+  imageProviderSaveChain = imageProviderSaveChain
+    .catch(()=>{})
+    .then(()=> saveImageSettings({ image_provider: provider }));
+  await imageProviderSaveChain;
 });
 
 settingImageBaseUrl?.addEventListener('change', async ()=>{
   state.ui.imageBaseUrl = String(settingImageBaseUrl.value || '').trim() || 'https://api.openai.com/v1';
+  state.ui.imageOpenaiModels = [];
+  state.ui.imageOpenaiModelsError = '';
   await saveImageSettings({ image_base_url: state.ui.imageBaseUrl });
   renderImageSettingsUI();
+  maybeFetchOpenaiImageModels(true);
 });
 
 settingImageApiKey?.addEventListener('change', async ()=>{
   state.ui.imageApiKey = String(settingImageApiKey.value || '');
+  state.ui.imageOpenaiModels = [];
+  state.ui.imageOpenaiModelsError = '';
   await saveImageSettings({ image_api_key: state.ui.imageApiKey });
   renderImageSettingsUI();
+  maybeFetchOpenaiImageModels(true);
 });
 
 settingImageModel?.addEventListener('change', async ()=>{
   state.ui.imageModel = String(settingImageModel.value || 'gpt-image-2');
   await saveImageSettings({ image_model: state.ui.imageModel });
   renderImageSettingsUI();
+});
+
+settingImageModelsRefresh?.addEventListener('click', async ()=>{
+  state.ui.imageOpenaiModels = [];
+  state.ui.imageOpenaiModelsError = '';
+  await maybeFetchOpenaiImageModels(true);
 });
 
 settingImageOpenrouterBaseUrl?.addEventListener('change', async ()=>{
@@ -3595,167 +5309,289 @@ const parseFloatSafe = (v, fallback)=>{
   return Number.isFinite(n) ? n : fallback;
 };
 
-settingImageComfyUrl?.addEventListener('change', async ()=>{
-  state.ui.imageComfyUrl = String(settingImageComfyUrl.value || '').trim();
-  await saveImageSettings({ image_comfyui_url: state.ui.imageComfyUrl });
+settingImageComfyProfile?.addEventListener('change', async ()=>{
+  // Capture any field that may still have unsaved edits before switching away.
+  captureComfyFormIntoActiveProfile();
+  const wanted = String(settingImageComfyProfile.value || '');
+  if (ensureComfyProfiles().some(p=>p.id === wanted)) state.ui.imageComfyProfileId = wanted;
+  syncComfyStateFromActiveProfile();
   renderImageSettingsUI();
+  await persistComfyProfiles();
 });
 
-settingImageComfyWorkflow?.addEventListener('change', async ()=>{
-  state.ui.imageComfyWorkflow = String(settingImageComfyWorkflow.value || '');
-  await saveImageSettings({ image_comfyui_workflow_json: state.ui.imageComfyWorkflow });
+settingImageComfyProfileNew?.addEventListener('click', async ()=>{
+  captureComfyFormIntoActiveProfile();
+  const profiles = ensureComfyProfiles();
+  const suggested = `ComfyUI ${profiles.length + 1}`;
+  const entered = window.prompt('Profile name', suggested);
+  if (entered === null) return;
+  const name = String(entered || '').trim() || suggested;
+  // IMPORTANT: do not call activeComfyProfile() here. ensureComfyProfiles()
+  // normalizes into a fresh array on each call; doing so would detach `profiles`
+  // and make profiles.push(p) write into a stale array (the old New-button bug).
+  const current = profiles.find(x=>x.id === state.ui.imageComfyProfileId) || profiles[0] || null;
+  const p = comfyNormalizeProfile({
+    id: comfyProfileId(),
+    name,
+    // Most installations use one ComfyUI server, so carry the URL over.
+    url: current?.url || state.ui.imageComfyUrl || '',
+    workflow_json: '',
+    bindings_json: '',
+    seed: -1,
+    steps: 20,
+    guidance: 3.5,
+    width: 512,
+    height: 512,
+    batch: 1,
+    timeout_sec: current?.timeout_sec ?? 900,
+    apply_defaults: false
+  });
+  profiles.push(p);
+  state.ui.imageComfyProfileId = p.id;
+  syncComfyStateFromActiveProfile();
   renderImageSettingsUI();
+  await persistComfyProfiles();
+  settingImageComfyWorkflow?.focus();
 });
 
-settingImageComfyBindings?.addEventListener('change', async ()=>{
-  state.ui.imageComfyBindings = String(settingImageComfyBindings.value || '');
-  await saveImageSettings({ image_comfyui_bindings_json: state.ui.imageComfyBindings });
+settingImageComfyProfileDuplicate?.addEventListener('click', async ()=>{
+  captureComfyFormIntoActiveProfile();
+  const src = activeComfyProfile();
+  if (!src) return;
+  const profiles = ensureComfyProfiles();
+  const copy = comfyNormalizeProfile({ ...src, id: comfyProfileId(), name: `${src.name} copy` });
+  profiles.push(copy);
+  state.ui.imageComfyProfileId = copy.id;
+  syncComfyStateFromActiveProfile();
   renderImageSettingsUI();
+  await persistComfyProfiles();
 });
 
-settingImageComfySeed?.addEventListener('change', async ()=>{
-  state.ui.imageComfySeed = parseIntSafe(settingImageComfySeed.value, -1);
-  await saveImageSettings({ image_comfyui_seed: state.ui.imageComfySeed });
-});
-settingImageComfySteps?.addEventListener('change', async ()=>{
-  state.ui.imageComfySteps = Math.max(1, parseIntSafe(settingImageComfySteps.value, 20));
-  await saveImageSettings({ image_comfyui_steps: state.ui.imageComfySteps });
-});
-settingImageComfyGuidance?.addEventListener('change', async ()=>{
-  state.ui.imageComfyGuidance = parseFloatSafe(settingImageComfyGuidance.value, 3.5);
-  await saveImageSettings({ image_comfyui_guidance: state.ui.imageComfyGuidance });
-});
-settingImageComfyWidth?.addEventListener('change', async ()=>{
-  state.ui.imageComfyWidth = Math.max(64, parseIntSafe(settingImageComfyWidth.value, 512));
-  await saveImageSettings({ image_comfyui_width: state.ui.imageComfyWidth });
-});
-settingImageComfyHeight?.addEventListener('change', async ()=>{
-  state.ui.imageComfyHeight = Math.max(64, parseIntSafe(settingImageComfyHeight.value, 512));
-  await saveImageSettings({ image_comfyui_height: state.ui.imageComfyHeight });
-});
-settingImageComfyBatch?.addEventListener('change', async ()=>{
-  state.ui.imageComfyBatch = Math.max(1, parseIntSafe(settingImageComfyBatch.value, 1));
-  await saveImageSettings({ image_comfyui_batch: state.ui.imageComfyBatch });
+settingImageComfyProfileRename?.addEventListener('click', async ()=>{
+  captureComfyFormIntoActiveProfile();
+  const p = activeComfyProfile();
+  if (!p) return;
+  const entered = window.prompt('Profile name', p.name || 'ComfyUI');
+  if (entered === null) return;
+  const name = String(entered || '').trim();
+  if (!name) return;
+  p.name = name;
+  renderImageSettingsUI();
+  await persistComfyProfiles();
 });
 
-settingImageComfyTimeout?.addEventListener('change', async ()=>{
-  state.ui.imageComfyTimeout = Math.max(30, parseIntSafe(settingImageComfyTimeout.value, 900));
-  await saveImageSettings({ image_comfyui_timeout_sec: state.ui.imageComfyTimeout });
+settingImageComfyProfileDelete?.addEventListener('click', async ()=>{
+  captureComfyFormIntoActiveProfile();
+  const profiles = ensureComfyProfiles();
+  if (profiles.length <= 1) return;
+  const currentId = String(state.ui.imageComfyProfileId || '');
+  const idx = profiles.findIndex(p=>p.id === currentId);
+  const p = idx >= 0 ? profiles[idx] : profiles[0];
+  if (!window.confirm(`Delete ComfyUI profile "${p?.name || 'ComfyUI'}"?`)) return;
+  const deleteAt = idx >= 0 ? idx : 0;
+  profiles.splice(deleteAt, 1);
+  const next = profiles[Math.min(deleteAt, profiles.length - 1)] || profiles[0];
+  state.ui.imageComfyProfileId = next?.id || '';
+  syncComfyStateFromActiveProfile();
+  renderImageSettingsUI();
+  await persistComfyProfiles();
 });
 
-settingImageComfyApplyDefaults?.addEventListener('change', async ()=>{
-  state.ui.imageComfyApplyDefaults = !!settingImageComfyApplyDefaults.checked;
-  await saveImageSettings({ image_comfyui_apply_defaults: state.ui.imageComfyApplyDefaults ? 1 : 0 });
-});
+const saveActiveComfyProfileFromForm = async ()=>{
+  captureComfyFormIntoActiveProfile();
+  await persistComfyProfiles();
+  renderImageSettingsUI();
+};
 
-function comfyuiDetectBindings(workflow){
-  const nodes = (workflow && typeof workflow === 'object') ? workflow : {};
-  const out = [];
-  const first = (pred)=>{
-    for (const [id, n] of Object.entries(nodes)){
-      if (!n || typeof n !== 'object') continue;
-      try { if (pred(id, n)) return [id, n]; } catch(_){ }
-    }
-    return null;
-  };
-  const titleOf = (n)=> String(n?._meta?.title || '').toLowerCase();
-  const hasInputs = (n, keys)=>{
-    const inp = n && typeof n.inputs === 'object' ? n.inputs : null;
-    if (!inp) return false;
-    return keys.every(k=> Object.prototype.hasOwnProperty.call(inp, k));
-  };
+settingImageComfyUrl?.addEventListener('change', saveActiveComfyProfileFromForm);
+settingImageComfyWorkflow?.addEventListener('change', saveActiveComfyProfileFromForm);
+settingImageComfyBindings?.addEventListener('change', saveActiveComfyProfileFromForm);
+settingImageComfySeed?.addEventListener('change', saveActiveComfyProfileFromForm);
+settingImageComfySteps?.addEventListener('change', saveActiveComfyProfileFromForm);
+settingImageComfyGuidance?.addEventListener('change', saveActiveComfyProfileFromForm);
+settingImageComfyWidth?.addEventListener('change', saveActiveComfyProfileFromForm);
+settingImageComfyHeight?.addEventListener('change', saveActiveComfyProfileFromForm);
+settingImageComfyBatch?.addEventListener('change', saveActiveComfyProfileFromForm);
+settingImageComfyTimeout?.addEventListener('change', saveActiveComfyProfileFromForm);
+settingImageComfyApplyDefaults?.addEventListener('change', saveActiveComfyProfileFromForm);
 
-  // prompt
-  // - Classic: CLIPTextEncode(text)
-  // - FLUX/SD3: CLIPTextEncodeFlux(clip_l, t5xxl)
-  //   We bind to prompt_clip_l / prompt_t5xxl so the backend can fall back to `prompt`
-  //   while still allowing truly separate prompts.
-  let h = first((id,n)=> n.class_type==='CLIPTextEncodeFlux' && (hasInputs(n,['clip_l']) || hasInputs(n,['t5xxl'])));
-  if (h) {
-    if (hasInputs(h[1], ['clip_l'])) out.push({
-      param:'prompt_clip_l',
-      selector:{ class_type:'CLIPTextEncodeFlux', has_inputs:['clip_l'] },
-      path:'inputs.clip_l',
-      cast:'string'
-    });
-    if (hasInputs(h[1], ['t5xxl'])) out.push({
-      param:'prompt_t5xxl',
-      selector:{ class_type:'CLIPTextEncodeFlux', has_inputs:['t5xxl'] },
-      path:'inputs.t5xxl',
-      cast:'string'
-    });
-  } else {
-    let usedPositive = false;
-    h = first((id,n)=> n.class_type==='CLIPTextEncode' && titleOf(n).includes('positive') && hasInputs(n,['text']));
-    if (h) usedPositive = true;
-    if (!h) h = first((id,n)=> n.class_type==='CLIPTextEncode' && hasInputs(n,['text']));
-    if (h) {
-      const sel = { class_type:'CLIPTextEncode', has_inputs:['text'] };
-      if (usedPositive) sel.meta_title_contains = 'positive';
-      out.push({ param:'prompt', selector: sel, path:'inputs.text', cast:'string' });
-    }
-  }
-
-  // seed
-  // Many modern workflows (SD3/FLUX) expose `seed` directly on KSampler.
-  h = first((id,n)=> (String(n.class_type||'').toLowerCase().includes('ksampler') || String(n.class_type||'').toLowerCase().includes('sampler')) && hasInputs(n,['seed']));
-  if (h) out.push({ param:'seed', selector:{ class_type:String(h[1]?.class_type||'KSampler'), has_inputs:['seed'] }, path:'inputs.seed', cast:'int' });
-  if (!h) {
-    h = first((id,n)=> n.class_type==='RandomNoise' && hasInputs(n,['noise_seed']));
-    if (h) out.push({ param:'seed', selector:{ class_type:'RandomNoise', has_inputs:['noise_seed'] }, path:'inputs.noise_seed', cast:'int' });
-  }
-
-  // steps
-  // Prefer the actual sampler node (KSampler / *KSampler* variants) over any other node that might also have a `steps` input.
-  h = first((id,n)=> n.class_type==='KSampler' && hasInputs(n,['steps']));
-  if (!h) h = first((id,n)=> String(n.class_type||'').toLowerCase().includes('ksampler') && hasInputs(n,['steps']));
-  if (!h) h = first((id,n)=> hasInputs(n,['steps']) && String(n.class_type||'').toLowerCase().includes('scheduler'));
-  if (!h) h = first((id,n)=> hasInputs(n,['steps']));
-  if (h) {
-    const sel = { has_inputs:['steps'] };
-    if (h[1]?.class_type) sel.class_type = String(h[1].class_type);
-    const t = titleOf(h[1]);
-    if (t.includes('scheduler')) sel.meta_title_contains = 'scheduler';
-    else if (t.includes('sampler')) sel.meta_title_contains = 'sampler';
-    out.push({ param:'steps', selector: sel, path:'inputs.steps', cast:'int' });
-  }
-
-  // guidance
-  // FLUX/SD3 uses guidance on CLIPTextEncodeFlux; prefer that over any other incidental `guidance` fields.
-  h = first((id,n)=> n.class_type==='CLIPTextEncodeFlux' && hasInputs(n,['guidance']));
-  if (!h) h = first((id,n)=> hasInputs(n,['guidance']));
-  if (h) {
-    const sel = { has_inputs:['guidance'] };
-    if (h[1]?.class_type) sel.class_type = String(h[1].class_type);
-    out.push({ param:'guidance', selector: sel, path:'inputs.guidance', cast:'float' });
-  }
-
-  // width/height
-  h = first((id,n)=> hasInputs(n,['width','height']));
-  if (h) {
-    out.push({ param:'width', selector:{ has_inputs:['width','height'] }, path:'inputs.width', cast:'int' });
-    out.push({ param:'height', selector:{ has_inputs:['width','height'] }, path:'inputs.height', cast:'int' });
-  }
-
-  // batch size
-  h = first((id,n)=> hasInputs(n,['batch_size']));
-  if (h) out.push({ param:'batch_size', selector:{ has_inputs:['batch_size'] }, path:'inputs.batch_size', cast:'int' });
-
-  return out;
+async function analyzeComfyWorkflow(mode, workflowJson){
+  const result = await api('comfyui_analyze', { mode, workflow_json: workflowJson });
+  const bindings = Array.isArray(result?.bindings) ? result.bindings : [];
+  const plan = (result?.plan && typeof result.plan === 'object') ? result.plan : null;
+  return { bindings, plan };
 }
 
 settingImageComfyAutodetect?.addEventListener('click', async ()=>{
   const raw = String(settingImageComfyWorkflow?.value || '').trim();
   if (!raw) { alert('Paste a Workflow JSON first.'); return; }
-  let wf;
-  try { wf = JSON.parse(raw); } catch(err){ alert('Workflow JSON is invalid: ' + (err?.message||String(err))); return; }
-  const bindings = comfyuiDetectBindings(wf);
-  const txt = JSON.stringify(bindings, null, 2);
-  if (settingImageComfyBindings) settingImageComfyBindings.value = txt;
-  state.ui.imageComfyBindings = txt;
-  await saveImageSettings({ image_comfyui_bindings_json: txt });
+  try {
+    captureComfyFormIntoActiveProfile();
+    const { bindings, plan } = await analyzeComfyWorkflow('generate', raw);
+    const txt = JSON.stringify(bindings, null, 2);
+    if (settingImageComfyBindings) settingImageComfyBindings.value = txt;
+    const p = activeComfyProfile();
+    if (p) {
+      p.workflow_json = raw;
+      p.bindings_json = txt;
+      p.binding_plan_json = plan ? JSON.stringify(plan) : '';
+    }
+    state.ui.imageComfyBindings = txt;
+    await persistComfyProfiles();
+    renderImageSettingsUI();
+  } catch(err) {
+    alert('Auto-detect failed: ' + (err?.message || String(err)));
+  }
+});
+
+
+const saveActiveImageEditComfyProfileFromForm = async ()=>{
+  captureImageEditComfyFormIntoActiveProfile();
+  await persistImageEditComfyProfiles();
+  renderImageSettingsUI();
+};
+
+settingImageModeGeneration?.addEventListener('click', ()=>{
+  state.ui.imageSettingsMode = 'generation';
   renderImageSettingsUI();
 });
+settingImageModeEditing?.addEventListener('click', ()=>{
+  state.ui.imageSettingsMode = 'editing';
+  renderImageSettingsUI();
+});
+const handleImageModeTabKey = (event)=>{
+  if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+  event.preventDefault();
+  let next = String(state.ui.imageSettingsMode || 'generation');
+  if (event.key === 'Home') next = 'generation';
+  else if (event.key === 'End') next = 'editing';
+  else next = next === 'generation' ? 'editing' : 'generation';
+  state.ui.imageSettingsMode = next;
+  renderImageSettingsUI();
+  (next === 'generation' ? settingImageModeGeneration : settingImageModeEditing)?.focus();
+};
+settingImageModeGeneration?.addEventListener('keydown', handleImageModeTabKey);
+settingImageModeEditing?.addEventListener('keydown', handleImageModeTabKey);
+
+settingImageEditComfyProfile?.addEventListener('change', async ()=>{
+  captureImageEditComfyFormIntoActiveProfile();
+  const wanted = String(settingImageEditComfyProfile.value || '');
+  if (ensureImageEditComfyProfiles().some(p=>p.id === wanted)) state.ui.imageEditComfyProfileId = wanted;
+  syncImageEditComfyStateFromActiveProfile();
+  renderImageSettingsUI();
+  await persistImageEditComfyProfiles();
+});
+
+settingImageEditComfyProfileNew?.addEventListener('click', async ()=>{
+  captureImageEditComfyFormIntoActiveProfile();
+  const profiles = ensureImageEditComfyProfiles();
+  const suggested = `ComfyUI Edit ${profiles.length + 1}`;
+  const entered = window.prompt('New edit profile name', suggested);
+  if (entered === null) return;
+  const name = String(entered || '').trim() || suggested;
+  const current = profiles.find(x=>x.id === state.ui.imageEditComfyProfileId) || profiles[0] || null;
+  const p = imageEditComfyNormalizeProfile({
+    id: imageEditComfyProfileId(),
+    name,
+    url: current?.url || state.ui.imageEditComfyUrl || '',
+    workflow_json: '',
+    bindings_json: '',
+    seed: current?.seed ?? state.ui.imageEditComfySeed ?? -1,
+    steps: current?.steps ?? state.ui.imageEditComfySteps ?? 20,
+    guidance: current?.guidance ?? state.ui.imageEditComfyGuidance ?? 3.5,
+    width: current?.width ?? state.ui.imageEditComfyWidth ?? 1024,
+    height: current?.height ?? state.ui.imageEditComfyHeight ?? 1024,
+    batch: current?.batch ?? state.ui.imageEditComfyBatch ?? 1,
+    megapixels: current?.megapixels ?? state.ui.imageEditComfyMegapixels ?? 1,
+    timeout_sec: current?.timeout_sec ?? state.ui.imageEditComfyTimeout ?? 900,
+    apply_defaults: current?.apply_defaults ?? state.ui.imageEditComfyApplyDefaults ?? false,
+  });
+  profiles.push(p);
+  state.ui.imageEditComfyProfileId = p.id;
+  syncImageEditComfyStateFromActiveProfile();
+  renderImageSettingsUI();
+  await persistImageEditComfyProfiles();
+  settingImageEditComfyWorkflow?.focus();
+});
+
+settingImageEditComfyProfileDuplicate?.addEventListener('click', async ()=>{
+  captureImageEditComfyFormIntoActiveProfile();
+  const src = activeImageEditComfyProfile();
+  if (!src) return;
+  const profiles = ensureImageEditComfyProfiles();
+  const copy = imageEditComfyNormalizeProfile({ ...src, id: imageEditComfyProfileId(), name: `${src.name} copy` });
+  profiles.push(copy);
+  state.ui.imageEditComfyProfileId = copy.id;
+  syncImageEditComfyStateFromActiveProfile();
+  renderImageSettingsUI();
+  await persistImageEditComfyProfiles();
+});
+
+settingImageEditComfyProfileRename?.addEventListener('click', async ()=>{
+  captureImageEditComfyFormIntoActiveProfile();
+  const p = activeImageEditComfyProfile();
+  if (!p) return;
+  const entered = window.prompt('Profile name', p.name || 'ComfyUI Edit');
+  if (entered === null) return;
+  const name = String(entered || '').trim();
+  if (!name) return;
+  p.name = name;
+  renderImageSettingsUI();
+  await persistImageEditComfyProfiles();
+});
+
+settingImageEditComfyProfileDelete?.addEventListener('click', async ()=>{
+  captureImageEditComfyFormIntoActiveProfile();
+  const profiles = ensureImageEditComfyProfiles();
+  if (profiles.length <= 1) return;
+  const currentId = String(state.ui.imageEditComfyProfileId || '');
+  const idx = profiles.findIndex(p=>p.id === currentId);
+  const p = idx >= 0 ? profiles[idx] : profiles[0];
+  if (!window.confirm(`Delete ComfyUI edit profile "${p?.name || 'ComfyUI Edit'}"?`)) return;
+  const deleteAt = idx >= 0 ? idx : 0;
+  profiles.splice(deleteAt, 1);
+  const next = profiles[Math.min(deleteAt, profiles.length - 1)] || profiles[0];
+  state.ui.imageEditComfyProfileId = next?.id || '';
+  syncImageEditComfyStateFromActiveProfile();
+  renderImageSettingsUI();
+  await persistImageEditComfyProfiles();
+});
+
+settingImageEditComfyUrl?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfyWorkflow?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfyBindings?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfySeed?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfySteps?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfyGuidance?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfyWidth?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfyHeight?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfyBatch?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfyMegapixels?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfyTimeout?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+settingImageEditComfyApplyDefaults?.addEventListener('change', saveActiveImageEditComfyProfileFromForm);
+
+settingImageEditComfyAutodetect?.addEventListener('click', async ()=>{
+  const raw = String(settingImageEditComfyWorkflow?.value || '').trim();
+  if (!raw) { alert('Paste an edit Workflow JSON first.'); return; }
+  try {
+    captureImageEditComfyFormIntoActiveProfile();
+    const { bindings, plan } = await analyzeComfyWorkflow('edit', raw);
+    const txt = JSON.stringify(bindings, null, 2);
+    if (settingImageEditComfyBindings) settingImageEditComfyBindings.value = txt;
+    const p = activeImageEditComfyProfile();
+    if (p) {
+      p.workflow_json = raw;
+      p.bindings_json = txt;
+      p.binding_plan_json = plan ? JSON.stringify(plan) : '';
+    }
+    state.ui.imageEditComfyBindings = txt;
+    await persistImageEditComfyProfiles();
+    renderImageSettingsUI();
+  } catch(err) {
+    alert('Auto-detect failed: ' + (err?.message || String(err)));
+  }
+});
+
 
 
   // Connections
@@ -4454,6 +6290,8 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       case 'speaker':
         // Feather "volume-2" (simplified)
         return wrap('<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>');
+      case 'search':
+        return wrap('<circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>');
       case 'x':
         return wrap('<path d="M18 6L6 18"/><path d="M6 6l12 12"/>');
       case 'maximize':
@@ -4466,9 +6304,83 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   }
 
   const iconForType = (t)=>{
-    const map = { file: 'paperclip', image: 'image', audio: 'audio', url: 'link', note: 'pencil', text: 'fileText' };
+    const map = { file: 'paperclip', document: 'fileText', image: 'image', audio: 'audio', url: 'link', note: 'pencil', text: 'fileText', rag: 'fileText' };
     return iconSvg(map[t] || 'fileText');
   };
+
+  // New document-library attachments keep text semantics but only persist a
+  // file_id. Extraction is fetched from PHP when the user opens the viewer or
+  // when the backend builds a model request. This cache lives only in memory.
+  const documentTextCache = new Map();
+
+  function isTextDocumentAttachment(a){
+    const t = String(a?.type || '');
+    return ['text','textfile','file_text','document'].includes(t); // `document` = compatibility with first library build
+  }
+
+  function documentKindLabel(name, mime){
+    const ext = extOf(name);
+    const m = String(mime || '').toLowerCase();
+    if (ext === 'pdf' || m === 'application/pdf') return 'PDF';
+    if (ext === 'docx' || m.includes('wordprocessingml')) return 'DOCX';
+    if (ext === 'odt' || m.includes('opendocument.text')) return 'ODT';
+    if (ext === 'xlsx' || m.includes('spreadsheetml')) return 'XLSX';
+    if (ext === 'ods' || m.includes('opendocument.spreadsheet')) return 'ODS';
+    if (ext === 'csv' || m === 'text/csv') return 'CSV';
+    return 'Text';
+  }
+
+  function documentTextMeta(a){
+    const size = human(Number(a?.size || 0));
+    const kind = documentKindLabel(a?.name || '', a?.mime || '');
+    return `${size ? size + ' · ' : ''}${kind} → Text`;
+  }
+
+  async function attachmentTextForView(a){
+    const inline = (typeof a?.text === 'string') ? a.text : '';
+    if (inline.trim()) return inline;
+    const fileId = String(a?.file_id || '').trim();
+    if (!fileId) throw new Error('No text extraction is available for this attachment');
+    if (documentTextCache.has(fileId)) return documentTextCache.get(fileId);
+    const r = await api('file_text', {id:fileId});
+    const text = String(r?.text || '');
+    if (!text.trim()) throw new Error('Document contains no extractable text');
+    documentTextCache.set(fileId, text);
+    return text;
+  }
+
+  function ragRefsForChat(chat = state.currentChat, includeDraft = false){
+    const refs = new Map();
+    const add = (a, requireReady=false)=>{
+      if (!a || a.type !== 'rag') return;
+      const id = String(a.rag_document_id || '').trim();
+      if (!id) return;
+      // Historical message attachments are immutable snapshots. Their stored
+      // rag_state can be stale after an interrupted automatic rebuild because
+      // the canonical file row is updated independently. Once a message owns a
+      // stable rag_document_id, keep sending that id and let the backend/ragd
+      // recovery path decide whether the index must be rebuilt. Only draft
+      // attachments are blocked on their live indexing state.
+      if (requireReady) {
+        const ragState = String(a.rag_state || '').trim().toLowerCase();
+        if (ragState && ragState !== 'ready') return;
+      }
+      if (!refs.has(id)) refs.set(id, {
+        id,
+        name: String(a.name || 'document'),
+        chunks: Number(a.rag_chunks || 0)
+      });
+    };
+    for (const m of (chat?.messages || [])) {
+      for (const a of (Array.isArray(m?.attachments) ? m.attachments : [])) add(a, false);
+    }
+    if (includeDraft) for (const a of (state.attachments || [])) add(a, true);
+    return [...refs.values()];
+  }
+
+  function ragDocumentIdsForChat(chat = state.currentChat){
+    return ragRefsForChat(chat, false).map(r=>r.id);
+  }
 
   function renderAttachments(){
     attachmentsBar.innerHTML='';
@@ -4479,20 +6391,28 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
         <span class="chip-icon">${iconForType(a.type)}</span>
         <span class="chip-name" title="${esc(a.name)}">${esc(a.name)}</span>
         ${a.meta?`<span class="chip-meta">· ${esc(a.meta)}</span>`:''}
-        ${(a.type==='text' && a.text)?`<button class="chip-action chip-view" title="View extraction" aria-label="View">${iconSvg('eye')}</button>`:''}
+        ${(isTextDocumentAttachment(a) && (a.text || a.file_id))?`<button class="chip-action chip-view" title="View extraction" aria-label="View">${iconSvg('eye')}</button>`:''}
         ${a.url?`<a class="chip-action chip-download" title="Download" aria-label="Download" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">${iconSvg('download')}</a>`:''}
-        ${(a.file_id && a.url)?`<button class="chip-action chip-delete" title="Delete on server" aria-label="Delete">${iconSvg('trash')}</button>`:''}
+        ${(a.file_id && a.url && a.type!=='rag')?`<button class="chip-action chip-delete" title="Delete on server" aria-label="Delete">${iconSvg('trash')}</button>`:''}
         <button class="chip-remove" title="Remove (local)" aria-label="Remove">${iconSvg('x')}</button>
       `;
       chip.querySelector('.chip-remove').addEventListener('click', ()=>{
         state.attachments = state.attachments.filter(x=>x.id!==a.id);
-        renderAttachments(); syncSend();
+        renderAttachments(); renderWebTools(); syncSend();
       });
 
       const viewBtn = chip.querySelector('.chip-view');
-      viewBtn?.addEventListener('click', (e)=>{
+      viewBtn?.addEventListener('click', async (e)=>{
         e.stopPropagation();
-        extractModal.open(a.name || 'Extraction', a.text || '');
+        const title = a.name ? `Extraction · ${a.name}` : 'Extraction';
+        try {
+          if (!a.text && a.file_id) extractModal.open(title, 'Extracting text from stored document…');
+          const text = await attachmentTextForView(a);
+          extractModal.open(title, text);
+        } catch (err) {
+          extractModal.close();
+          alert(String(err?.message || err || 'Could not extract document text'));
+        }
       });
 
       const delBtn = chip.querySelector('.chip-delete');
@@ -4501,14 +6421,14 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
         const ok = confirm('Really delete this file from the server?');
         if(!ok) return;
         try{
-          await api('file_delete', { id: a.file_id });
+          await deleteStoredFileWithForce(a.file_id);
         }catch(err){
-          alert(String(err?.message || err));
+          if (!err?.cancelled) alert(String(err?.message || err));
           return;
         }
         // Remove from local attachments after server delete
         state.attachments = state.attachments.filter(x=>x.id!==a.id);
-        renderAttachments(); syncSend();
+        renderAttachments(); renderWebTools(); syncSend();
       });
 
       attachmentsBar.appendChild(chip);
@@ -4520,6 +6440,280 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     attachBtn.setAttribute('aria-expanded', attachMenu.classList.contains('show')?'true':'false');
   }
   attachBtn?.addEventListener('click', (e)=>{ e.stopPropagation(); toggleAttachMenu(); });
+
+  // ---------- Persistent document library ----------
+  let documentLibraryModal = null;
+  let documentLibraryRefreshTimer = null;
+
+  function ensureDocumentLibraryModal(){
+    if (documentLibraryModal) return documentLibraryModal;
+    const modal = document.createElement('div');
+    modal.className = 'modal document-library-modal';
+    modal.setAttribute('role','dialog');
+    modal.setAttribute('aria-modal','true');
+    modal.setAttribute('aria-hidden','true');
+    modal.innerHTML = `
+      <div class="modal-backdrop" data-document-library-close="1"></div>
+      <div class="modal-panel document-library-panel" role="document">
+        <div class="modal-header">
+          <div>
+            <div>Documents</div>
+            <div class="document-library-subtitle">New document uploads stored by LLC</div>
+          </div>
+          <button class="icon-btn" data-document-library-close="1" aria-label="Close">${iconSvg('x')}</button>
+        </div>
+        <div class="document-library-toolbar">
+          <div class="document-library-hint">Files stay on disk; this list stores only metadata and RAG state.</div>
+          <div class="document-library-toolbar-actions">
+            <label class="document-library-search" aria-label="Search documents">
+              ${iconSvg('search')}
+              <input class="document-library-search-input" type="search" placeholder="Search documents…" autocomplete="off" spellcheck="false" />
+            </label>
+            <button class="btn tiny document-library-refresh" type="button">Refresh</button>
+          </div>
+        </div>
+        <div class="document-library-list"></div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    const close = ()=>{
+      if (documentLibraryRefreshTimer) {
+        clearTimeout(documentLibraryRefreshTimer);
+        documentLibraryRefreshTimer = null;
+      }
+      modal.classList.remove('open');
+      modal.setAttribute('aria-hidden','true');
+    };
+    modal.querySelectorAll('[data-document-library-close="1"]').forEach(el=>el.addEventListener('click', close));
+    modal.querySelector('.document-library-refresh')?.addEventListener('click', ()=>loadDocumentLibrary());
+    modal.querySelector('.document-library-search-input')?.addEventListener('input', ()=>filterDocumentLibraryRows());
+    document.addEventListener('keydown', (e)=>{ if (e.key==='Escape' && modal.classList.contains('open')) close(); });
+    documentLibraryModal = { modal, close };
+    return documentLibraryModal;
+  }
+
+  function filterDocumentLibraryRows(){
+    const ref = documentLibraryModal;
+    if (!ref?.modal) return;
+    const list = ref.modal.querySelector('.document-library-list');
+    const input = ref.modal.querySelector('.document-library-search-input');
+    if (!list || !input) return;
+
+    const query = String(input.value || '').trim().toLocaleLowerCase();
+    const rows = Array.from(list.querySelectorAll('.document-library-row'));
+    let visible = 0;
+    for (const row of rows) {
+      const haystack = String(row.dataset.search || '').toLocaleLowerCase();
+      const show = !query || haystack.includes(query);
+      row.hidden = !show;
+      if (show) visible++;
+    }
+
+    let empty = list.querySelector('.document-library-filter-empty');
+    if (query && rows.length && visible === 0) {
+      if (!empty) {
+        empty = document.createElement('div');
+        empty.className = 'document-library-empty document-library-filter-empty';
+        list.appendChild(empty);
+      }
+      empty.textContent = `No documents match “${input.value.trim()}”.`;
+      empty.hidden = false;
+    } else if (empty) {
+      empty.hidden = true;
+    }
+  }
+
+  function libraryRagLabel(file){
+    const s = String(file?.rag_state || '').toLowerCase();
+    const chunks = Math.max(0, Number(file?.rag_chunks || 0));
+    const indexedAt = Number(file?.rag_indexed_at || 0);
+    if (s === 'ready') return `RAG ready${chunks ? ` · ${chunks} chunks` : ''}${indexedAt ? ` · indexed ${fmt(indexedAt)}` : ''}`;
+    if (s === 'failed') return `RAG failed${file?.rag_error ? ` · ${String(file.rag_error)}` : ''}`;
+    if (['queued','chunking','embedding','storing'].includes(s)) return `RAG · ${ragPhaseLabel(s)}`;
+    return 'Not indexed in RAG';
+  }
+
+  function attachLibraryDocument(file){
+    const readyForRag = String(file?.rag_state || '').toLowerCase() === 'ready' && String(file?.rag_document_id || '').trim();
+    const useRag = !!(state.webtools?.rag && readyForRag);
+    const id = 'att_'+Math.random().toString(36).slice(2,9);
+    if (useRag) {
+      state.attachments.push({
+        id,
+        type:'rag',
+        name:String(file.name || 'document'),
+        meta:`RAG · ${Number(file.rag_chunks || 0)} chunks`,
+        url:String(file.url || ''),
+        mime:String(file.mime || 'application/octet-stream'),
+        size:Number(file.size || 0),
+        file_id:String(file.id || ''),
+        rag_document_id:String(file.rag_document_id || ''),
+        rag_job_id:String(file.rag_job_id || ''),
+        rag_state:'ready',
+        rag_chunks:Number(file.rag_chunks || 0),
+        rag_embedding_model:String(file.rag_embedding_model || '')
+      });
+    } else {
+      const normal = {
+        id,
+        type:'text',
+        name:String(file.name || 'document'),
+        url:String(file.url || ''),
+        mime:String(file.mime || 'application/octet-stream'),
+        size:Number(file.size || 0),
+        file_id:String(file.id || '')
+      };
+      normal.meta = documentTextMeta(normal);
+      state.attachments.push(normal);
+    }
+    renderAttachments();
+    renderWebTools();
+    syncSend();
+  }
+
+  async function indexLibraryDocument(file, button){
+    if (!state.ui.ragAvailable) {
+      alert('RAG is not available. Configure a server URL in Settings → RAG.');
+      return;
+    }
+    if (button) { button.disabled = true; button.textContent = 'Starting…'; }
+    try {
+      const res = await api('file_rag_index', {id:String(file.id || '')});
+      const jobId = String(res?.rag_job_id || res?.job_id || '');
+      if (!jobId) {
+        await loadDocumentLibrary();
+        return;
+      }
+      setRagRuntimeActivity({title:'Indexing RAG document', detail:`${String(file.name || 'Document')} · ${ragPhaseLabel(res?.rag_state || 'queued')}`, percent:null});
+      const shadow = {
+        name:String(file.name || 'Document'),
+        rag_chunks:Number(res?.rag_chunks || 0),
+        rag_state:String(res?.rag_state || 'queued'),
+        meta:''
+      };
+      await waitForRagJob(jobId, shadow);
+      await loadDocumentLibrary();
+    } catch (err) {
+      alert(String(err?.message || err || 'RAG indexing failed'));
+      await loadDocumentLibrary().catch(()=>{});
+    } finally {
+      if (button && button.isConnected) button.disabled = false;
+    }
+  }
+
+  async function deleteLibraryDocument(file){
+    const name = String(file?.name || 'document');
+    if (!confirm(`Really delete ${name} from LLC?`)) return;
+    try {
+      await deleteStoredFileWithForce(file.id);
+      // Remove unsent references to a file that no longer exists. Historic chat
+      // references deliberately remain untouched and will report a missing file.
+      state.attachments = (state.attachments || []).filter(a=>String(a?.file_id || '') !== String(file.id || ''));
+      renderAttachments();
+      syncSend();
+      await loadDocumentLibrary();
+    } catch (err) {
+      if (!err?.cancelled) alert(String(err?.message || err || 'Delete failed'));
+    }
+  }
+
+  async function loadDocumentLibrary(){
+    const ref = ensureDocumentLibraryModal();
+    const list = ref.modal.querySelector('.document-library-list');
+    if (!list) return;
+    if (documentLibraryRefreshTimer) {
+      clearTimeout(documentLibraryRefreshTimer);
+      documentLibraryRefreshTimer = null;
+    }
+    list.innerHTML = '<div class="document-library-empty">Loading…</div>';
+    try {
+      const res = await api('file_library_list');
+      const files = Array.isArray(res?.files) ? res.files : [];
+
+      // A ragd job can finish while this dialog/browser is closed. Reconcile
+      // active jobs when the library is opened so DB status never becomes the
+      // source of truth for ragd progress.
+      if (state.ui.ragAvailable) {
+        await Promise.all(files.map(async file=>{
+          const s = String(file?.rag_state || '').toLowerCase();
+          const jobId = String(file?.rag_job_id || '').trim();
+          if (!jobId || !['queued','chunking','embedding','storing'].includes(s)) return;
+          try {
+            const job = await api('rag_job', {job_id:jobId});
+            if (job && typeof job === 'object') {
+              file.rag_state = String(job.state || file.rag_state || '');
+              file.rag_chunks = Number(job.chunks || job.total || file.rag_chunks || 0);
+              if (job.embedding_model) file.rag_embedding_model = String(job.embedding_model);
+              file.rag_error = String(job.error || '');
+            }
+          } catch(_){ /* keep last known metadata; row remains usable */ }
+        }));
+      }
+
+      list.innerHTML = '';
+      if (!files.length) {
+        list.innerHTML = '<div class="document-library-empty">No library documents yet. New PDF/TXT/Docs/Sheets uploads will appear here.</div>';
+        return;
+      }
+      for (const file of files) {
+        const row = document.createElement('div');
+        row.className = 'document-library-row';
+        row.dataset.search = `${String(file?.name || '')} ${String(file?.mime || '')} ${libraryRagLabel(file)}`;
+        const ragState = String(file?.rag_state || '').toLowerCase();
+        const indexing = ['queued','chunking','embedding','storing'].includes(ragState);
+        const created = Number(file?.created_at || 0);
+        const useLabel = (ragState === 'ready' && state.webtools?.rag) ? 'Use with RAG' : 'Use in chat';
+        row.innerHTML = `
+          <div class="document-library-file">
+            <div class="document-library-name" title="${esc(file.name || '')}">${iconSvg('fileText')}<span>${esc(file.name || 'document')}</span></div>
+            <div class="document-library-meta">${esc(human(Number(file.size || 0)))} · ${esc(file.mime || '')}${created ? ` · ${esc(fmt(created))}` : ''}</div>
+            <div class="document-library-rag ${ragState === 'failed' ? 'failed' : (ragState === 'ready' ? 'ready' : '')}">${esc(libraryRagLabel(file))}</div>
+          </div>
+          <div class="document-library-actions">
+            <button class="btn tiny library-use" type="button">${useLabel}</button>
+            ${ragState !== 'ready' ? `<button class="btn tiny library-index" type="button" ${indexing ? 'disabled' : ''}>${indexing ? ragPhaseLabel(ragState) : (ragState === 'failed' ? 'Retry RAG' : 'Index in RAG')}</button>` : ''}
+            <button class="icon-btn sm library-view" type="button" title="View extracted text" aria-label="View extracted text">${iconSvg('eye')}</button>
+            ${file.url ? `<a class="icon-btn sm" href="${esc(file.url)}" target="_blank" rel="noopener noreferrer" title="Download" aria-label="Download">${iconSvg('download')}</a>` : ''}
+            <button class="icon-btn sm danger library-delete" type="button" title="Delete" aria-label="Delete">${iconSvg('trash')}</button>
+          </div>`;
+        row.querySelector('.library-use')?.addEventListener('click', ()=>{
+          attachLibraryDocument(file);
+          ref.close();
+        });
+        row.querySelector('.library-view')?.addEventListener('click', async ()=>{
+          const title = file?.name ? `Extraction · ${file.name}` : 'Extraction';
+          try {
+            extractModal.open(title, 'Extracting text from stored document…');
+            const text = await attachmentTextForView({file_id:String(file?.id || ''), name:file?.name, mime:file?.mime, size:file?.size});
+            extractModal.open(title, text);
+          } catch (err) {
+            extractModal.close();
+            alert(String(err?.message || err || 'Could not extract document text'));
+          }
+        });
+        row.querySelector('.library-index')?.addEventListener('click', (e)=>indexLibraryDocument(file, e.currentTarget));
+        row.querySelector('.library-delete')?.addEventListener('click', ()=>deleteLibraryDocument(file));
+        list.appendChild(row);
+      }
+      filterDocumentLibraryRows();
+
+      const stillIndexing = files.some(file=>['queued','chunking','embedding','storing'].includes(String(file?.rag_state || '').toLowerCase()));
+      if (stillIndexing && ref.modal.classList.contains('open')) {
+        documentLibraryRefreshTimer = setTimeout(()=>loadDocumentLibrary(), 1200);
+      }
+    } catch (err) {
+      list.innerHTML = `<div class="document-library-empty">${esc(String(err?.message || err || 'Could not load documents'))}</div>`;
+    }
+  }
+
+  async function openDocumentLibrary(){
+    const ref = ensureDocumentLibraryModal();
+    const search = ref.modal.querySelector('.document-library-search-input');
+    if (search) search.value = '';
+    ref.modal.classList.add('open');
+    ref.modal.setAttribute('aria-hidden','false');
+    await loadDocumentLibrary();
+  }
 
 
   // ---------- Document workspace UI ----------
@@ -4693,105 +6887,11 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     previewModal.open(title, buildHtmlPreviewDoc(doc.content || '', css));
   }
 
-  function escapeHtml(str){
-    return String(str ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-  }
+  // Document preview intentionally uses the exact same Markdown parser as chat.
+  // Keeping a second reduced parser here caused feature drift (notably tables
+  // and multi-line blockquotes). The shared md() renderer escapes raw input
+  // before applying Markdown, so it is also the safe rendering path.
 
-  function sanitizeUrl(url){
-    const raw = String(url || '').trim();
-    if (!raw) return '#';
-    try{
-      const u = new URL(raw, window.location.href);
-      if (!['http:', 'https:', 'mailto:'].includes(u.protocol)) return '#';
-      return escapeHtml(raw);
-    }catch(_){
-      return '#';
-    }
-  }
-
-  function renderInlineMarkdownSafe(text){
-    let out = escapeHtml(text);
-    out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
-    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-    out = out.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_, label, url) => `<a href="${sanitizeUrl(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`);
-    return out;
-  }
-
-  function renderMarkdownSafe(markdown){
-    const src = String(markdown || '').slice(0, 60000);
-    const lines = src.split(/\r?\n/);
-    const html = [];
-    let inCode = false, codeBuf = [], codeLang = '';
-    let inUl = false, inOl = false, para = [];
-
-    const closePara = () => {
-      if (para.length) {
-        // In document preview we preserve author-entered soft line breaks.
-        // This keeps poems, notes and plain-text markdown readable instead of
-        // collapsing every single newline into one long paragraph line.
-        html.push(`<p>${para.map(renderInlineMarkdownSafe).join('<br>\n')}</p>`);
-        para = [];
-      }
-    };
-    const closeLists = () => {
-      if (inUl) { html.push('</ul>'); inUl = false; }
-      if (inOl) { html.push('</ol>'); inOl = false; }
-    };
-    const closeCode = () => {
-      const cls = codeLang ? ` class="language-${escapeHtml(codeLang)}"` : '';
-      html.push(`<pre><code${cls}>${escapeHtml(codeBuf.join('\n'))}</code></pre>`);
-      inCode = false; codeBuf = []; codeLang = '';
-    };
-
-    for (const line of lines) {
-      const fence = line.match(/^```\s*([A-Za-z0-9_-]+)?\s*$/);
-      if (fence) {
-        if (inCode) closeCode();
-        else { closePara(); closeLists(); inCode = true; codeLang = fence[1] || ''; codeBuf = []; }
-        continue;
-      }
-      if (inCode) { codeBuf.push(line); continue; }
-
-      if (!line.trim()) { closePara(); closeLists(); continue; }
-
-      const h = line.match(/^(#{1,6})\s+(.+)$/);
-      if (h) {
-        closePara(); closeLists();
-        const level = h[1].length;
-        html.push(`<h${level}>${renderInlineMarkdownSafe(h[2].trim())}</h${level}>`);
-        continue;
-      }
-
-      if (/^>\s?/.test(line)) {
-        closePara(); closeLists();
-        html.push(`<blockquote>${renderInlineMarkdownSafe(line.replace(/^>\s?/, ''))}</blockquote>`);
-        continue;
-      }
-
-      const ul = line.match(/^\s*[-*+]\s+(.+)$/);
-      if (ul) {
-        closePara(); if (inOl) { html.push('</ol>'); inOl = false; }
-        if (!inUl) { html.push('<ul>'); inUl = true; }
-        html.push(`<li>${renderInlineMarkdownSafe(ul[1])}</li>`);
-        continue;
-      }
-
-      const ol = line.match(/^\s*\d+[.)]\s+(.+)$/);
-      if (ol) {
-        closePara(); if (inUl) { html.push('</ul>'); inUl = false; }
-        if (!inOl) { html.push('<ol>'); inOl = true; }
-        html.push(`<li>${renderInlineMarkdownSafe(ol[1])}</li>`);
-        continue;
-      }
-
-      if (/^---+$/.test(line.trim())) { closePara(); closeLists(); html.push('<hr>'); continue; }
-      para.push(line.trim());
-    }
-    if (inCode) closeCode();
-    closePara(); closeLists();
-    return html.join('\n') || '<p class="muted">Empty document.</p>';
-  }
 
   function documentStateForPayload(chat = state.currentChat){
     const dm = ensureDocumentMeta(chat);
@@ -4898,7 +6998,13 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       if (!doc) {
         documentPreviewEl.textContent = 'Document mode is on. Ask the model to create one or more documents, then pick the active file here.';
       } else if (mode === 'preview') {
-        documentPreviewEl.innerHTML = renderMarkdownSafe(renderDoc.content || '');
+        const renderedMarkdown = md(renderDoc.content || '');
+        documentPreviewEl.innerHTML = renderedMarkdown || '<p class="muted">Empty document.</p>';
+        // The shared chat renderer includes per-code-block controls. The document
+        // panel already has document-level copy/download controls, so avoid a
+        // second set of controls inside the preview itself.
+        documentPreviewEl.querySelectorAll('.code-copy,.code-download,.code-preview').forEach(el=>el.remove());
+        scheduleFitMermaid(documentPreviewEl);
       } else {
         documentPreviewEl.textContent = String(renderDoc.content || '');
       }
@@ -5106,10 +7212,59 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   function customToolKey(t){ return String(t?.id || t?.name || '').trim(); }
   function customToolName(t){ return String(t?.name || t?.id || '').trim(); }
   function customToolTitle(t){ return String(t?.title || t?.name || t?.id || 'Custom tool').trim(); }
+  function customToolFunctionName(value){
+    return String(value || '').trim().replace(/[^A-Za-z0-9_]+/g, '_').replace(/^[^A-Za-z_]+/, '').slice(0, 64);
+  }
+  function customToolNormalizeHeaders(raw){
+    const out = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    for (const [key,value] of Object.entries(raw)) {
+      const name = String(key || '').trim();
+      if (!name) continue;
+      out[name] = String(value ?? '');
+    }
+    return out;
+  }
+  function customToolClone(value, fallback={}){
+    try { return JSON.parse(JSON.stringify(value)); } catch(_) { return fallback; }
+  }
+  function customToolNormalizeParameters(raw){
+    const schema = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? customToolClone(raw,{}) : {};
+    schema.type = 'object';
+    if (!schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties)) schema.properties = {};
+    if (!Array.isArray(schema.required)) schema.required = [];
+    schema.required = schema.required.map(x=>String(x)).filter(Boolean);
+    return schema;
+  }
+  function customToolNormalizeTimeout(value, fallback=30){
+    const n = parseInt(String(value ?? ''),10);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(1,Math.min(120,n));
+  }
+  function customToolNormalizeTool(tool, index=0){
+    const rawName = String(tool?.name || tool?.id || `custom_tool_${index+1}`).trim();
+    const name = rawName || `custom_tool_${index+1}`;
+    const method = String(tool?.method || 'POST').toUpperCase() === 'GET' ? 'GET' : 'POST';
+    return {
+      id:String(tool?.id || name).trim() || name,
+      name,
+      title:String(tool?.title || name).trim() || name,
+      description:String(tool?.description || '').trim(),
+      endpoint:String(tool?.endpoint || tool?.url || '').trim(),
+      method,
+      headers:customToolNormalizeHeaders(tool?.headers),
+      allow_private:!!tool?.allow_private,
+      timeout_sec:customToolNormalizeTimeout(tool?.timeout_sec,30),
+      parameters:customToolNormalizeParameters(tool?.parameters),
+      body_template:typeof tool?.body_template === 'string' ? tool.body_template : ''
+    };
+  }
+  function customToolsCurrent(){
+    return (Array.isArray(state.ui.customTools) ? state.ui.customTools : []).map((tool,index)=>customToolNormalizeTool(tool,index));
+  }
   function defaultCustomToolNames(){
     if (!state.ui.customToolsAutoEnable) return [];
-    const tools = Array.isArray(state.ui.customTools) ? state.ui.customTools : [];
-    return tools.map(t=>customToolName(t)).filter(Boolean);
+    return customToolsCurrent().map(t=>customToolName(t)).filter(Boolean);
   }
   function enabledCustomTools(){
     const arr = Array.isArray(state.webtools?.custom_tools) ? state.webtools.custom_tools : [];
@@ -5118,36 +7273,699 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   function setEnabledCustomTools(set){
     state.webtools.custom_tools = Array.from(set || []).filter(Boolean);
   }
+  function customToolSetPageStatus(message, kind=''){
+    if (!settingCustomToolsStatus) return;
+    settingCustomToolsStatus.textContent = String(message || '');
+    settingCustomToolsStatus.classList.toggle('ok', kind === 'ok');
+    settingCustomToolsStatus.classList.toggle('err', kind === 'err');
+  }
+  function customToolSyncRawEditor(){
+    const tools = customToolsCurrent();
+    const pretty = JSON.stringify(tools,null,2);
+    state.ui.customToolsJson = pretty;
+    if (settingCustomToolsJson && settingCustomToolsJson !== document.activeElement) settingCustomToolsJson.value = pretty;
+  }
+  function customToolHostLabel(url){
+    try { return new URL(String(url || '')).host || String(url || ''); }
+    catch(_) { return String(url || ''); }
+  }
+  function customToolIsLocalUrl(url){
+    try {
+      const host = new URL(String(url || '')).hostname.toLowerCase();
+      return host === 'localhost' || host === '127.0.0.1' || host === '::1' || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+    } catch(_) { return false; }
+  }
+  function customToolParameterCount(tool){
+    const props = customToolNormalizeParameters(tool?.parameters).properties;
+    return Object.keys(props).length;
+  }
   function renderCustomToolsSettingsUI(){
     if (settingCustomToolsAutoEnable) settingCustomToolsAutoEnable.checked = !!state.ui.customToolsAutoEnable;
+    const tools = customToolsCurrent();
+    state.ui.customTools = tools;
     if (settingCustomToolsJson && settingCustomToolsJson !== document.activeElement) {
       settingCustomToolsJson.value = String(state.ui.customToolsJson || '[]');
     }
-    if (settingCustomToolsStatus) {
-      const n = Array.isArray(state.ui.customTools) ? state.ui.customTools.length : 0;
-      settingCustomToolsStatus.textContent = n ? `${n} custom tool${n === 1 ? '' : 's'} configured.` : 'No custom tools configured.';
+    if (customToolsList) {
+      customToolsList.innerHTML = '';
+      for (const [index,tool] of tools.entries()) {
+        const card = document.createElement('div');
+        card.className = 'conn-card custom-tool-card';
+        const headers = Object.keys(customToolNormalizeHeaders(tool.headers)).length;
+        const params = customToolParameterCount(tool);
+        const local = customToolIsLocalUrl(tool.endpoint) || !!tool.allow_private;
+        const host = customToolHostLabel(tool.endpoint);
+        card.innerHTML = `
+          <div class="conn-card-head">
+            <div class="custom-tool-card-main">
+              <div class="conn-title">${esc(customToolTitle(tool))}</div>
+              <div class="conn-sub mono">${esc(tool.name)}${host ? ` · ${esc(host)}` : ''}</div>
+            </div>
+            <div class="conn-actions">
+              <button class="btn btn-ghost" type="button" data-custom-tool-cmd="edit" data-index="${index}">Edit</button>
+              <button class="btn btn-danger" type="button" data-custom-tool-cmd="delete" data-index="${index}">Delete</button>
+            </div>
+          </div>
+          <div class="conn-card-body">
+            <div class="custom-tool-card-badges">
+              <span class="model-badge">${esc(tool.method)}</span>
+              <span class="model-badge">${params} parameter${params===1?'':'s'}</span>
+              ${headers ? `<span class="model-badge">${headers} header${headers===1?'':'s'}</span>` : ''}
+              ${local ? `<span class="model-badge">private network allowed</span>` : ''}
+              ${tool.body_template ? `<span class="model-badge">custom body</span>` : ''}
+            </div>
+            <div class="custom-tool-card-endpoint mono">${esc(tool.endpoint || 'No endpoint')}</div>
+            ${tool.description ? `<div class="muted custom-tool-card-description">${esc(tool.description)}</div>` : ''}
+          </div>`;
+        customToolsList.appendChild(card);
+      }
+    }
+    customToolsEmpty?.classList.toggle('hidden', tools.length > 0);
+    if (!String(settingCustomToolsStatus?.textContent || '').trim()) {
+      customToolSetPageStatus(tools.length ? `${tools.length} custom tool${tools.length===1?'':'s'} configured.` : 'No custom tools configured.');
     }
   }
+  async function persistCustomTools(tools, message='Custom tools updated.'){
+    const normalized = (Array.isArray(tools) ? tools : []).map((tool,index)=>customToolNormalizeTool(tool,index));
+    const names = new Set();
+    const ids = new Set();
+    for (const tool of normalized) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(tool.name)) throw new Error(`${tool.title || tool.name}: Function name is invalid.`);
+      if (!tool.description) throw new Error(`${tool.title || tool.name}: Description is required.`);
+      if (!tool.endpoint) throw new Error(`${tool.title || tool.name}: Endpoint is required.`);
+      if (names.has(tool.name)) throw new Error(`Duplicate function name: ${tool.name}`);
+      names.add(tool.name);
+      if (tool.id && ids.has(tool.id)) throw new Error(`Duplicate tool ID: ${tool.id}`);
+      if (tool.id) ids.add(tool.id);
+    }
+    const pretty = JSON.stringify(normalized,null,2);
+    await api('settings_save',{custom_tools_json:pretty});
+    state.ui.customTools = normalized;
+    state.ui.customToolsJson = pretty;
+    if (settingCustomToolsJson) settingCustomToolsJson.value = pretty;
+
+    const valid = new Set();
+    for (const tool of normalized) { valid.add(tool.name); if (tool.id) valid.add(tool.id); }
+    const hasOverride = !!(state.currentChat?.meta && state.currentChat.meta.webtools);
+    if (hasOverride) {
+      state.webtools.custom_tools = Array.from(enabledCustomTools()).filter(key=>valid.has(key));
+      persistCurrentWebTools();
+    } else {
+      state.webtools.custom_tools = defaultCustomToolNames();
+    }
+    customToolSetPageStatus(message,'ok');
+    renderCustomToolsSettingsUI();
+    renderWebTools();
+  }
+  function parseCustomToolsEditor(){
+    const parsed = JSON.parse(String(settingCustomToolsJson?.value || '[]').trim() || '[]');
+    if (!Array.isArray(parsed)) throw new Error('Top-level JSON must be an array.');
+    return parsed;
+  }
   async function saveCustomToolsFromSettings(){
-    if (!settingCustomToolsJson) return;
-    const raw = String(settingCustomToolsJson.value || '[]').trim() || '[]';
-    let parsed;
-    try { parsed = JSON.parse(raw); }
-    catch(ex){ if (settingCustomToolsStatus) settingCustomToolsStatus.textContent = 'Invalid JSON: ' + (ex?.message || ex); return; }
-    if (!Array.isArray(parsed)) { if (settingCustomToolsStatus) settingCustomToolsStatus.textContent = 'Top-level JSON must be an array.'; return; }
-    const pretty = JSON.stringify(parsed, null, 2);
-    try{
-      await api('settings_save', { custom_tools_json: pretty });
-      state.ui.customToolsJson = pretty;
-      state.ui.customTools = parsed.filter(x=>x && typeof x === 'object' && String(x.name || '').trim());
-      if (settingCustomToolsJson) settingCustomToolsJson.value = pretty;
-      if (settingCustomToolsStatus) settingCustomToolsStatus.textContent = `Saved ${state.ui.customTools.length} custom tool${state.ui.customTools.length === 1 ? '' : 's'}.`;
-      const hasOverride = !!(state.currentChat?.meta && state.currentChat.meta.webtools);
-      if (!hasOverride) state.webtools.custom_tools = defaultCustomToolNames();
-      renderCustomToolsSettingsUI();
-      renderWebTools();
-    }catch(ex){
-      if (settingCustomToolsStatus) settingCustomToolsStatus.textContent = ex?.message || 'Could not save custom tools.';
+    try {
+      const parsed = parseCustomToolsEditor();
+      await persistCustomTools(parsed, `Applied ${parsed.length} custom tool${parsed.length===1?'':'s'} from raw configuration.`);
+    } catch(ex) {
+      customToolSetPageStatus(ex?.message || 'Could not apply raw custom tool configuration.','err');
+    }
+  }
+
+  let customToolEditorIdWasEdited = false;
+  let customToolEditorBaseParameters = customToolNormalizeParameters({});
+
+  function customToolSetEditorResult(kind, message){
+    if (!customToolEditorResult) return;
+    customToolEditorResult.classList.remove('hidden','ok','err');
+    customToolEditorResult.classList.add(kind === 'ok' ? 'ok' : 'err');
+    customToolEditorResult.textContent = String(message || '');
+  }
+  function customToolClearEditorResult(){
+    if (!customToolEditorResult) return;
+    customToolEditorResult.classList.add('hidden');
+    customToolEditorResult.classList.remove('ok','err');
+    customToolEditorResult.textContent = '';
+  }
+  function customToolRefreshHeaderEmpty(){
+    if (!customToolNoHeaders || !customToolHeaderList) return;
+    customToolNoHeaders.classList.toggle('hidden', customToolHeaderList.querySelectorAll('.custom-tool-header-row').length > 0);
+  }
+  function customToolAddHeaderRow(name='',value=''){
+    if (!customToolHeaderList) return;
+    const row = document.createElement('div');
+    row.className = 'mcp-header-row custom-tool-header-row';
+    row.innerHTML = `
+      <input class="mcp-header-name custom-tool-header-name" type="text" placeholder="Header name" spellcheck="false" value="${esc(name)}" />
+      <input class="mcp-header-value custom-tool-header-value" type="text" placeholder="Value" spellcheck="false" value="${esc(value)}" />
+      <button class="icon-btn mcp-header-remove custom-tool-header-remove" type="button" aria-label="Remove header">✕</button>`;
+    customToolHeaderList.appendChild(row);
+    customToolRefreshHeaderEmpty();
+    row.querySelector('.custom-tool-header-name')?.focus();
+  }
+  function customToolRenderHeaders(headers){
+    if (!customToolHeaderList) return;
+    customToolHeaderList.innerHTML = '';
+    for (const [name,value] of Object.entries(customToolNormalizeHeaders(headers))) customToolAddHeaderRow(name,value);
+    customToolRefreshHeaderEmpty();
+  }
+  function customToolCollectHeaders(){
+    const headers = {};
+    for (const row of Array.from(customToolHeaderList?.querySelectorAll('.custom-tool-header-row') || [])) {
+      const name = String(row.querySelector('.custom-tool-header-name')?.value || '').trim();
+      if (!name) continue;
+      headers[name] = String(row.querySelector('.custom-tool-header-value')?.value || '');
+    }
+    return headers;
+  }
+  function customToolRefreshParameterEmpty(){
+    if (!customToolNoParameters || !customToolParameterList) return;
+    customToolNoParameters.classList.toggle('hidden', customToolParameterList.querySelectorAll('.custom-tool-parameter-row').length > 0);
+  }
+  function customToolAddParameterRow(name='', schema={}, required=false, focus=true){
+    if (!customToolParameterList) return;
+    const original = (schema && typeof schema === 'object' && !Array.isArray(schema)) ? customToolClone(schema,{}) : {};
+    const type = ['string','number','integer','boolean','object','array'].includes(String(original.type || '')) ? String(original.type) : '';
+    const row = document.createElement('div');
+    row.className = 'custom-tool-parameter-row';
+    row._customToolSchema = original;
+    row.innerHTML = `
+      <input class="custom-tool-param-name" type="text" placeholder="email" spellcheck="false" value="${esc(name)}" />
+      <select class="custom-tool-param-type">
+        <option value=""${type===''?' selected':''}>Any</option>
+        <option value="string"${type==='string'?' selected':''}>String</option>
+        <option value="number"${type==='number'?' selected':''}>Number</option>
+        <option value="integer"${type==='integer'?' selected':''}>Integer</option>
+        <option value="boolean"${type==='boolean'?' selected':''}>Boolean</option>
+        <option value="object"${type==='object'?' selected':''}>Object</option>
+        <option value="array"${type==='array'?' selected':''}>Array</option>
+      </select>
+      <input class="custom-tool-param-description" type="text" placeholder="What this argument means" value="${esc(String(original.description || ''))}" />
+      <label class="custom-tool-param-required"><input type="checkbox" ${required?'checked':''} /><span>Required</span></label>
+      <button class="icon-btn custom-tool-param-remove" type="button" aria-label="Remove parameter">✕</button>`;
+    customToolParameterList.appendChild(row);
+    customToolRefreshParameterEmpty();
+    if (focus) row.querySelector('.custom-tool-param-name')?.focus();
+  }
+  function customToolRenderParameters(parameters){
+    if (!customToolParameterList) return;
+    const schema = customToolNormalizeParameters(parameters);
+    customToolEditorBaseParameters = customToolClone(schema,customToolNormalizeParameters({}));
+    customToolParameterList.innerHTML = '';
+    const required = new Set(schema.required || []);
+    for (const [name,prop] of Object.entries(schema.properties || {})) customToolAddParameterRow(name,prop,required.has(name),false);
+    customToolRefreshParameterEmpty();
+  }
+  function customToolCollectParameters(){
+    const base = customToolClone(customToolEditorBaseParameters,customToolNormalizeParameters({}));
+    base.type = 'object';
+    base.properties = {};
+    const required = [];
+    const seen = new Set();
+    for (const row of Array.from(customToolParameterList?.querySelectorAll('.custom-tool-parameter-row') || [])) {
+      const name = String(row.querySelector('.custom-tool-param-name')?.value || '').trim();
+      if (!name) continue;
+      if (seen.has(name)) throw new Error(`Duplicate parameter name: ${name}`);
+      seen.add(name);
+      const schema = customToolClone(row._customToolSchema || {},{});
+      const type = String(row.querySelector('.custom-tool-param-type')?.value || '');
+      const description = String(row.querySelector('.custom-tool-param-description')?.value || '').trim();
+      if (type) schema.type = type; else delete schema.type;
+      if (description) schema.description = description; else delete schema.description;
+      base.properties[name] = schema;
+      if (row.querySelector('.custom-tool-param-required input')?.checked) required.push(name);
+    }
+    base.required = required;
+    return base;
+  }
+  function customToolSyncBodyUI(){
+    const isPost = String(customToolEditMethod?.value || 'POST') === 'POST';
+    customToolBodyCard?.classList.toggle('hidden', !isPost);
+    if (!isPost) return;
+    const custom = String(customToolEditBodyMode?.value || 'default') === 'template';
+    customToolBodyTemplateWrap?.classList.toggle('hidden', !custom);
+    if (customToolBodyModeHint) customToolBodyModeHint.innerHTML = custom
+      ? 'Build the POST body with <code>{{parameter}}</code> placeholders.'
+      : 'Default sends <code>{"arguments": ...}</code> as JSON.';
+  }
+  function openCustomToolEditor(index=-1){
+    const tools = customToolsCurrent();
+    const editing = Number.isInteger(Number(index)) && Number(index) >= 0 && Number(index) < tools.length;
+    let name = 'custom_tool';
+    let suffix = 2;
+    const used = new Set(tools.map(tool=>tool.name));
+    while (used.has(name)) name = `custom_tool_${suffix++}`;
+    const tool = editing ? tools[Number(index)] : customToolNormalizeTool({
+      id:name,
+      name,
+      title:'New Custom Tool',
+      description:'',
+      endpoint:'',
+      method:'POST',
+      parameters:{type:'object',properties:{},required:[]},
+      timeout_sec:30
+    }, tools.length);
+    if (customToolEditIndex) customToolEditIndex.value = editing ? String(index) : '-1';
+    if (customToolEditTitle) customToolEditTitle.value = tool.title;
+    if (customToolEditName) customToolEditName.value = tool.name;
+    if (customToolEditDescription) customToolEditDescription.value = tool.description;
+    if (customToolEditMethod) customToolEditMethod.value = tool.method;
+    if (customToolEditEndpoint) customToolEditEndpoint.value = tool.endpoint;
+    if (customToolEditAllowPrivate) customToolEditAllowPrivate.checked = !!tool.allow_private;
+    if (customToolEditBodyMode) customToolEditBodyMode.value = tool.body_template ? 'template' : 'default';
+    if (customToolEditBodyTemplate) customToolEditBodyTemplate.value = tool.body_template;
+    if (customToolEditId) customToolEditId.value = tool.id;
+    if (customToolEditTimeout) customToolEditTimeout.value = String(tool.timeout_sec);
+    customToolEditorIdWasEdited = editing && tool.id !== tool.name;
+    customToolRenderHeaders(tool.headers);
+    customToolRenderParameters(tool.parameters);
+    customToolSyncBodyUI();
+    customToolClearEditorResult();
+    const title = $('#custom-tool-editor-title');
+    if (title) title.textContent = editing ? 'Edit Custom Tool' : 'Add Custom Tool';
+    if (customToolEditorApply) customToolEditorApply.textContent = editing ? 'Update tool' : 'Add tool';
+    customToolEditorModal?.classList.remove('hidden');
+    requestAnimationFrame(()=>customToolEditTitle?.focus());
+  }
+  function closeCustomToolEditor(){ customToolEditorModal?.classList.add('hidden'); }
+  function collectCustomToolEditorTool(){
+    const name = String(customToolEditName?.value || '').trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) throw new Error('Function name must start with a letter or underscore and contain only letters, numbers and underscores (max. 64 characters).');
+    const title = String(customToolEditTitle?.value || '').trim() || name;
+    const description = String(customToolEditDescription?.value || '').trim();
+    if (!description) throw new Error('Description is required.');
+    const endpoint = String(customToolEditEndpoint?.value || '').trim();
+    if (!endpoint) throw new Error('Endpoint is required.');
+    try {
+      const parsed = new URL(endpoint);
+      if (!/^https?:$/.test(parsed.protocol)) throw new Error('');
+    } catch(_) { throw new Error('Endpoint must be a valid HTTP or HTTPS URL.'); }
+    const method = String(customToolEditMethod?.value || 'POST') === 'GET' ? 'GET' : 'POST';
+    const bodyTemplate = method === 'POST' && String(customToolEditBodyMode?.value || 'default') === 'template'
+      ? String(customToolEditBodyTemplate?.value || '')
+      : '';
+    return customToolNormalizeTool({
+      id:String(customToolEditId?.value || '').trim() || name,
+      name,
+      title,
+      description,
+      endpoint,
+      method,
+      headers:customToolCollectHeaders(),
+      allow_private:!!customToolEditAllowPrivate?.checked,
+      timeout_sec:customToolNormalizeTimeout(customToolEditTimeout?.value,30),
+      parameters:customToolCollectParameters(),
+      body_template:bodyTemplate
+    });
+  }
+
+
+  const mcpTestState = new Map();
+  let mcpEditorIdWasEdited = false;
+
+  function mcpClamp(value, min, max, fallback){
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, Math.round(n)));
+  }
+  function mcpNormalizeTimeoutSec(value, fallback=3600){
+    const n = parseInt(String(value ?? ''), 10);
+    if (!Number.isFinite(n)) return fallback;
+    if (n < 0) return 0;
+    if (n > 2592000) return 2592000;
+    return n;
+  }
+  function mcpServerKey(server){
+    const raw = String(server?.id || server?.name || '').trim();
+    return raw.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^[_-]+|[_-]+$/g, '').slice(0, 40);
+  }
+  function mcpServerTitle(server){ return String(server?.name || server?.id || 'MCP server').trim(); }
+  function mcpNormalizeHeaders(raw){
+    const out = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    for (const [key, value] of Object.entries(raw)) {
+      const name = String(key || '').trim();
+      if (!name) continue;
+      out[name] = String(value ?? '');
+    }
+    return out;
+  }
+  function mcpNormalizeServer(server, index=0){
+    const name = String(server?.name || server?.title || server?.id || `MCP Server ${index+1}`).trim() || `MCP Server ${index+1}`;
+    const id = mcpServerKey({id:server?.id || name}) || `server_${index+1}`;
+    return {
+      id,
+      name,
+      description: String(server?.description || '').trim(),
+      url: String(server?.url || server?.endpoint || '').trim(),
+      token: String(server?.token || server?.bearer_token || ''),
+      headers: mcpNormalizeHeaders(server?.headers),
+      allow_private: !!server?.allow_private,
+      timeout_sec: mcpNormalizeTimeoutSec(server?.timeout_sec, 3600),
+      max_response_bytes: mcpClamp(server?.max_response_bytes, 65536, 64*1024*1024, 32*1024*1024),
+      follow_exec_jobs: server?.follow_exec_jobs !== false,
+      protocol_version: String(server?.protocol_version || '2025-11-25').trim() || '2025-11-25'
+    };
+  }
+  function mcpCurrentServers(){
+    return (Array.isArray(state.ui.mcpServers) ? state.ui.mcpServers : []).map((server,index)=>mcpNormalizeServer(server,index));
+  }
+  function defaultMcpServerIds(){
+    if (!state.ui.mcpServersAutoEnable) return [];
+    return mcpCurrentServers().map(mcpServerKey).filter(Boolean);
+  }
+  function enabledMcpServers(){
+    return new Set((Array.isArray(state.webtools?.mcp_servers) ? state.webtools.mcp_servers : []).map(x=>String(x)).filter(Boolean));
+  }
+  function setEnabledMcpServers(set){ state.webtools.mcp_servers = Array.from(set || []).filter(Boolean); }
+  function mcpSetPageStatus(message, kind=''){
+    if (!settingMcpServersStatus) return;
+    settingMcpServersStatus.textContent = String(message || '');
+    settingMcpServersStatus.classList.toggle('ok', kind === 'ok');
+    settingMcpServersStatus.classList.toggle('err', kind === 'err');
+  }
+  function renderMcpContextSettingsUI(){
+    const mode = String(state.ui.mcpContextMode || 'externalize') === 'externalize' ? 'externalize' : 'full';
+    if (settingMcpContextMode) settingMcpContextMode.value = mode;
+    if (settingMcpExternalizeAbove) settingMcpExternalizeAbove.value = String(mcpClamp(state.ui.mcpExternalizeAboveTokens, 500, 200000, 6000));
+    if (settingMcpPreviewMax) settingMcpPreviewMax.value = String(mcpClamp(state.ui.mcpPreviewMaxTokens, 200, 50000, 2500));
+    if (settingMcpFullPassMax) settingMcpFullPassMax.value = String(mcpClamp(state.ui.mcpFullFirstPassMaxTokens, 0, 200000, 32000));
+    mcpContextLimits?.classList.toggle('disabled', mode !== 'externalize');
+    if (settingMcpContextStatus && !String(settingMcpContextStatus.textContent || '').trim()) {
+      settingMcpContextStatus.textContent = mode === 'externalize'
+        ? 'Changes are saved automatically. Large MCP results are stored as artifacts; very large results use the preview immediately.'
+        : 'Changes are saved automatically. Full MCP results remain in every later agent request.';
+    }
+  }
+  async function saveMcpContextSettings(){
+    const mode = String(settingMcpContextMode?.value || 'externalize') === 'externalize' ? 'externalize' : 'full';
+    const threshold = mcpClamp(settingMcpExternalizeAbove?.value, 500, 200000, 6000);
+    const preview = mcpClamp(settingMcpPreviewMax?.value, 200, 50000, 2500);
+    const fullFirstPassMax = mcpClamp(settingMcpFullPassMax?.value, 0, 200000, 32000);
+    if (preview >= threshold && mode === 'externalize') {
+      if (settingMcpContextStatus) settingMcpContextStatus.textContent = 'Maximum preview must be smaller than the externalization threshold.';
+      return;
+    }
+
+    // Apply locally before the asynchronous persistence call. Every chat request
+    // sends these exact values to the backend, so the visible UI mode is never
+    // dependent on whether an earlier settings request has already completed.
+    state.ui.mcpContextMode = mode;
+    state.ui.mcpExternalizeAboveTokens = threshold;
+    state.ui.mcpPreviewMaxTokens = preview;
+    state.ui.mcpFullFirstPassMaxTokens = fullFirstPassMax;
+    renderMcpContextSettingsUI();
+
+    try {
+      await api('settings_save', {
+        mcp_context_mode: mode,
+        mcp_externalize_above_tokens: threshold,
+        mcp_preview_max_tokens: preview,
+        mcp_full_first_pass_max_tokens: fullFirstPassMax
+      });
+      if (settingMcpContextStatus) settingMcpContextStatus.textContent = mode === 'externalize'
+        ? `Saved automatically. MCP results above ${threshold} tokens become artifacts; results above ${fullFirstPassMax} tokens use the ${preview}-token preview immediately.`
+        : 'Saved automatically. MCP results remain in full context.';
+    } catch(ex) {
+      if (settingMcpContextStatus) settingMcpContextStatus.textContent = (ex?.message || 'Could not persist MCP context handling.') + ' The current page still uses the selected mode for chat requests.';
+    }
+  }
+  function mcpSyncRawEditor(){
+    const servers = mcpCurrentServers();
+    const pretty = JSON.stringify(servers, null, 2);
+    state.ui.mcpServersJson = pretty;
+    if (settingMcpServersJson && settingMcpServersJson !== document.activeElement) settingMcpServersJson.value = pretty;
+  }
+  function mcpHostLabel(url){
+    try { return new URL(String(url || '')).host || String(url || ''); }
+    catch(_) { return String(url || ''); }
+  }
+  function mcpIsLocalUrl(url){
+    try {
+      const host = new URL(String(url || '')).hostname.toLowerCase();
+      return host === 'localhost' || host === '127.0.0.1' || host === '::1' || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+    } catch(_) { return false; }
+  }
+  function mcpRenderTestState(server){
+    const stateItem = mcpTestState.get(mcpServerKey(server));
+    if (!stateItem) return '';
+    const cls = stateItem.ok ? 'ok' : 'err';
+    return `<div class="mcp-card-test ${cls}">${esc(stateItem.text || '')}</div>`;
+  }
+  function renderMcpSettingsUI(){
+    if (settingMcpServersAutoEnable) settingMcpServersAutoEnable.checked = !!state.ui.mcpServersAutoEnable;
+    renderMcpContextSettingsUI();
+    const servers = mcpCurrentServers();
+    state.ui.mcpServers = servers;
+    mcpSyncRawEditor();
+
+    if (mcpList) {
+      mcpList.innerHTML = '';
+      for (const [index, server] of servers.entries()) {
+        const card = document.createElement('div');
+        card.className = 'conn-card mcp-card';
+        const auth = String(server.token || '') !== '';
+        const headerCount = Object.keys(mcpNormalizeHeaders(server.headers)).length;
+        const local = mcpIsLocalUrl(server.url);
+        card.innerHTML = `
+          <div class="conn-card-head">
+            <div class="mcp-card-main">
+              <div class="conn-title">${esc(mcpServerTitle(server))}</div>
+              <div class="conn-sub mono">${esc(server.url || 'No URL')}</div>
+            </div>
+            <div class="conn-actions">
+              <button class="btn btn-ghost" type="button" data-mcp-cmd="test" data-index="${index}">Test</button>
+              <button class="btn btn-ghost" type="button" data-mcp-cmd="edit" data-index="${index}">Edit</button>
+              <button class="btn btn-danger" type="button" data-mcp-cmd="delete" data-index="${index}">Delete</button>
+            </div>
+          </div>
+          <div class="conn-card-body">
+            <div class="mcp-card-badges">
+              <span class="model-badge">${esc(server.id)}</span>
+              <span class="model-badge">${auth ? 'Bearer auth' : 'No auth'}</span>
+              ${headerCount ? `<span class="model-badge">${headerCount} custom header${headerCount===1?'':'s'}</span>` : ''}
+              ${local ? `<span class="model-badge">local/private</span>` : ''}
+              <span class="model-badge">${server.follow_exec_jobs !== false ? 'exec jobs followed' : 'exec jobs detached'}</span>
+              <span class="model-badge">${esc(server.protocol_version)}</span>
+            </div>
+            ${server.description ? `<div class="muted mcp-card-description">${esc(server.description)}</div>` : ''}
+            ${mcpRenderTestState(server)}
+          </div>`;
+        mcpList.appendChild(card);
+      }
+    }
+    mcpEmpty?.classList.toggle('hidden', servers.length > 0);
+    if (!String(settingMcpServersStatus?.textContent || '').trim()) {
+      mcpSetPageStatus(servers.length ? `${servers.length} MCP server${servers.length===1?'':'s'} configured.` : 'No MCP servers configured.');
+    }
+  }
+  async function persistMcpServers(servers, message='MCP servers saved.'){
+    const normalized = (Array.isArray(servers) ? servers : []).map((server,index)=>mcpNormalizeServer(server,index));
+    const seen = new Set();
+    for (const server of normalized) {
+      if (!server.url) throw new Error(`${server.name}: Server URL is required.`);
+      if (seen.has(server.id)) throw new Error(`Duplicate MCP server ID: ${server.id}`);
+      seen.add(server.id);
+    }
+    const pretty = JSON.stringify(normalized, null, 2);
+    await api('settings_save', {mcp_servers_json:pretty});
+    state.ui.mcpServers = normalized;
+    state.ui.mcpServersJson = pretty;
+    if (settingMcpServersJson) settingMcpServersJson.value = pretty;
+
+    const valid = new Set(normalized.map(mcpServerKey));
+    const hasOverride = !!(state.currentChat?.meta && state.currentChat.meta.webtools);
+    if (hasOverride) {
+      state.webtools.mcp_servers = Array.from(enabledMcpServers()).filter(id=>valid.has(id));
+      persistCurrentWebTools();
+    } else {
+      state.webtools.mcp_servers = defaultMcpServerIds();
+    }
+    for (const key of Array.from(mcpTestState.keys())) if (!valid.has(key)) mcpTestState.delete(key);
+    mcpSetPageStatus(message, 'ok');
+    renderMcpSettingsUI();
+    renderWebTools();
+  }
+  function parseMcpServersEditor(){
+    const parsed = JSON.parse(String(settingMcpServersJson?.value || '[]').trim() || '[]');
+    if (!Array.isArray(parsed)) throw new Error('Top-level JSON must be an array.');
+    return parsed;
+  }
+  async function saveMcpServersFromSettings(){
+    try {
+      const parsed = parseMcpServersEditor();
+      await persistMcpServers(parsed, `Applied ${parsed.length} MCP server${parsed.length===1?'':'s'} from raw JSON.`);
+    } catch(ex) {
+      mcpSetPageStatus(ex?.message || 'Could not apply raw MCP configuration.', 'err');
+    }
+  }
+
+  function mcpSetEditorResult(kind, lines){
+    if (!mcpEditorResult) return;
+    mcpEditorResult.classList.remove('hidden','ok','err');
+    mcpEditorResult.classList.add(kind === 'ok' ? 'ok' : 'err');
+    mcpEditorResult.textContent = Array.isArray(lines) ? lines.join('\n') : String(lines || '');
+  }
+  function mcpClearEditorResult(){
+    if (!mcpEditorResult) return;
+    mcpEditorResult.classList.add('hidden');
+    mcpEditorResult.classList.remove('ok','err');
+    mcpEditorResult.textContent = '';
+  }
+  function mcpRefreshHeaderEmpty(){
+    if (!mcpNoHeaders || !mcpHeaderList) return;
+    mcpNoHeaders.classList.toggle('hidden', mcpHeaderList.querySelectorAll('.mcp-header-row').length > 0);
+  }
+  function mcpAddHeaderRow(name='', value=''){
+    if (!mcpHeaderList) return;
+    const row = document.createElement('div');
+    row.className = 'mcp-header-row';
+    row.innerHTML = `
+      <input class="mcp-header-name" type="text" placeholder="Header name" spellcheck="false" value="${esc(name)}" />
+      <input class="mcp-header-value" type="text" placeholder="Value" spellcheck="false" value="${esc(value)}" />
+      <button class="icon-btn mcp-header-remove" type="button" aria-label="Remove header">✕</button>`;
+    mcpHeaderList.appendChild(row);
+    mcpRefreshHeaderEmpty();
+    row.querySelector('.mcp-header-name')?.focus();
+  }
+  function mcpRenderHeaders(headers){
+    if (!mcpHeaderList) return;
+    mcpHeaderList.innerHTML = '';
+    for (const [name,value] of Object.entries(mcpNormalizeHeaders(headers))) mcpAddHeaderRow(name,value);
+    mcpRefreshHeaderEmpty();
+  }
+  function mcpSetAuthEnabled(enabled){
+    if (mcpEditAuthEnabled) mcpEditAuthEnabled.checked = !!enabled;
+    mcpEditTokenWrap?.classList.toggle('hidden', !enabled);
+    if (!enabled && mcpEditToken) {
+      mcpEditToken.type = 'password';
+      mcpEditToken.classList.remove('is-revealed');
+    }
+    if (mcpTokenReveal) mcpTokenReveal.textContent = 'Show';
+  }
+  function openMcpEditor(index=-1){
+    const servers = mcpCurrentServers();
+    const editing = Number.isInteger(Number(index)) && Number(index) >= 0 && Number(index) < servers.length;
+    let newId = 'local';
+    let suffix = 2;
+    const usedIds = new Set(servers.map(mcpServerKey));
+    while (usedIds.has(newId)) newId = `local_${suffix++}`;
+    const server = editing ? servers[Number(index)] : mcpNormalizeServer({
+      id:newId,
+      name:newId === 'local' ? 'Local MCP Server' : `Local MCP Server ${suffix-1}`,
+      url:'http://127.0.0.1:8765/mcp',
+      token:'change-me',
+      allow_private:true,
+      timeout_sec:3600,
+      max_response_bytes:32*1024*1024,
+      follow_exec_jobs:true,
+      protocol_version:'2025-11-25'
+    }, servers.length);
+    if (mcpEditIndex) mcpEditIndex.value = editing ? String(index) : '-1';
+    if (mcpEditName) mcpEditName.value = server.name;
+    if (mcpEditId) mcpEditId.value = server.id;
+    if (mcpEditUrl) mcpEditUrl.value = server.url;
+    if (mcpEditDescription) mcpEditDescription.value = server.description;
+    if (mcpEditToken) { mcpEditToken.value = server.token; mcpEditToken.type = 'password'; }
+    if (mcpEditAllowPrivate) mcpEditAllowPrivate.checked = !!server.allow_private;
+    if (mcpEditProtocol) mcpEditProtocol.value = server.protocol_version;
+    if (mcpEditTimeout) mcpEditTimeout.value = String(server.timeout_sec);
+    if (mcpEditMaxResponse) mcpEditMaxResponse.value = String(Math.max(1,Math.round(server.max_response_bytes/(1024*1024))));
+    if (mcpEditFollowExecJobs) mcpEditFollowExecJobs.checked = server.follow_exec_jobs !== false;
+    mcpSetAuthEnabled(String(server.token || '') !== '');
+    mcpRenderHeaders(server.headers);
+    mcpClearEditorResult();
+    mcpEditorIdWasEdited = editing;
+    const title = $('#mcp-editor-title');
+    if (title) title.textContent = editing ? 'Edit MCP Server' : 'Add MCP Server';
+    mcpEditorModal?.classList.remove('hidden');
+    mcpEditorModal?.setAttribute('aria-hidden','false');
+    window.setTimeout(()=>mcpEditName?.focus(),0);
+  }
+  function closeMcpEditor(){
+    mcpEditorModal?.classList.add('hidden');
+    mcpEditorModal?.setAttribute('aria-hidden','true');
+    mcpClearEditorResult();
+  }
+  function collectMcpEditorServer(){
+    const name = String(mcpEditName?.value || '').trim();
+    const id = mcpServerKey({id:String(mcpEditId?.value || '').trim()});
+    const url = String(mcpEditUrl?.value || '').trim();
+    if (!name) throw new Error('Name is required.');
+    if (!id) throw new Error('Server ID is required.');
+    if (!url) throw new Error('Server URL is required.');
+    let parsedUrl;
+    try { parsedUrl = new URL(url); } catch(_) { throw new Error('Server URL is invalid.'); }
+    if (!['http:','https:'].includes(parsedUrl.protocol)) throw new Error('Server URL must use http:// or https://.');
+
+    const headers = {};
+    for (const row of Array.from(mcpHeaderList?.querySelectorAll('.mcp-header-row') || [])) {
+      const headerName = String(row.querySelector('.mcp-header-name')?.value || '').trim();
+      const headerValue = String(row.querySelector('.mcp-header-value')?.value || '');
+      if (!headerName && !headerValue.trim()) continue;
+      if (!headerName) throw new Error('Every custom header needs a name.');
+      if (Object.prototype.hasOwnProperty.call(headers, headerName)) throw new Error(`Duplicate custom header: ${headerName}`);
+      headers[headerName] = headerValue;
+    }
+    const maxMb = mcpClamp(mcpEditMaxResponse?.value, 1, 64, 32);
+    return mcpNormalizeServer({
+      id,
+      name,
+      description:String(mcpEditDescription?.value || '').trim(),
+      url,
+      token:mcpEditAuthEnabled?.checked ? String(mcpEditToken?.value || '') : '',
+      headers,
+      allow_private:!!mcpEditAllowPrivate?.checked,
+      timeout_sec:mcpNormalizeTimeoutSec(mcpEditTimeout?.value,3600),
+      max_response_bytes:maxMb*1024*1024,
+      follow_exec_jobs:mcpEditFollowExecJobs ? !!mcpEditFollowExecJobs.checked : true,
+      protocol_version:String(mcpEditProtocol?.value || '2025-11-25').trim() || '2025-11-25'
+    });
+  }
+  async function testMcpServer(server, {editor=false}={}){
+    const key = mcpServerKey(server);
+    if (editor) {
+      if (mcpEditorTest) mcpEditorTest.disabled = true;
+      mcpSetEditorResult('ok',['Testing connection…']);
+    } else {
+      mcpTestState.set(key,{ok:true,text:'Testing connection…'});
+      renderMcpSettingsUI();
+    }
+    try {
+      const result = await api('mcp_test',{server});
+      const tools = Array.isArray(result.tools) ? result.tools.map(tool=>String(tool?.name || '')).filter(Boolean) : [];
+      const line = `${Number(result.tool_count || 0)} tools · ${Number(result.duration_ms || 0)} ms · protocol ${String(result.protocol_version || server.protocol_version)}`;
+      mcpTestState.set(key,{ok:true,text:`Connected: ${line}`});
+      if (editor) {
+        const lines = [`Connected: ${line}`];
+        if (tools.length) lines.push(`Tools: ${tools.slice(0,12).join(', ')}${tools.length>12?' …':''}`);
+        mcpSetEditorResult('ok',lines);
+      }
+      mcpSetPageStatus(`${mcpServerTitle(server)} connected successfully.`, 'ok');
+      renderMcpSettingsUI();
+      return result;
+    } catch(ex) {
+      const message = String(ex?.message || ex || 'Connection failed.');
+      mcpTestState.set(key,{ok:false,text:`Connection failed: ${message}`});
+      if (editor) mcpSetEditorResult('err',[`Connection failed: ${message}`]);
+      mcpSetPageStatus(`${mcpServerTitle(server)}: ${message}`, 'err');
+      renderMcpSettingsUI();
+      throw ex;
+    } finally {
+      if (editor && mcpEditorTest) mcpEditorTest.disabled = false;
+    }
+  }
+  async function testMcpServersFromSettings(){
+    const servers = mcpCurrentServers();
+    if (!servers.length) { mcpSetPageStatus('No MCP servers to test.'); return; }
+    if (settingMcpServersTest) settingMcpServersTest.disabled = true;
+    let ok = 0;
+    try {
+      for (const server of servers) {
+        try { await testMcpServer(server); ok++; } catch(_) { /* card already shows the failure */ }
+      }
+      mcpSetPageStatus(`${ok}/${servers.length} MCP server${servers.length===1?'':'s'} connected successfully.`, ok===servers.length?'ok':'err');
+    } finally {
+      if (settingMcpServersTest) settingMcpServersTest.disabled = false;
     }
   }
 
@@ -5191,7 +8009,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
         <div class="modal-header">
           <div>
             <div class="modal-title">Code workspace</div>
-            <div class="muted workspace-modal-sub">Manage projects and choose what the agent may do in this chat.</div>
+            <div class="muted workspace-modal-sub">Manage projects. Access below is a user-controlled permission for this chat; the agent cannot change it.</div>
           </div>
           <button class="icon-btn workspace-close-icon" type="button" data-workspace-close="1" title="Close" aria-label="Close">${iconSvg('x')}</button>
         </div>
@@ -5208,15 +8026,15 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
               <option value="read">Read only</option>
               <option value="write">Read and edit</option>
             </select>
-            <span class="muted workspace-access-note">Select a workspace first. This can be changed at any time.</span>
+            <span class="muted workspace-access-note">Read and edit is the default. You can lock the active or next workspace to read only at any time.</span>
           </div>
-          <div class="workspace-strategy-row">
-            <label for="workspace-strategy-select">Tool strategy for this chat</label>
-            <select id="workspace-strategy-select" class="input workspace-strategy-select">
-              <option value="standard">Standard</option>
-              <option value="efficient" selected>Efficient</option>
+          <div class="workspace-download-row">
+            <label for="workspace-download-select">Offer download after changes</label>
+            <select id="workspace-download-select" class="input workspace-download-select">
+              <option value="yes" selected>Yes</option>
+              <option value="no">No</option>
             </select>
-            <span class="muted workspace-strategy-note">Efficient is the default and tells the model to use the smallest reliable amount of workspace context.</span>
+            <span class="muted workspace-download-note">When enabled, the agent should attach one changed file directly, or a ZIP when several files were changed.</span>
           </div>
           <div class="workspace-status muted" aria-live="polite"></div>
           <div class="workspace-list"></div>
@@ -5241,7 +8059,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
           </section>
         </div>
         <div class="modal-footer workspace-modal-footer">
-          <button class="btn btn-ghost workspace-detach-btn" type="button">${iconSvg('unlink')}<span>Detach from chat</span></button>
+          <button class="btn btn-ghost workspace-detach-btn" type="button">${iconSvg('unlink')}<span>Turn off for chat</span></button>
           <button class="btn btn-ghost" type="button" data-workspace-close="1">${iconSvg('x')}<span>Close</span></button>
         </div>
       </div>`;
@@ -5256,7 +8074,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
 
     const accessEl = modal.querySelector('.workspace-access-select');
     accessEl?.addEventListener('change', ()=>{
-      if (!state.webtools.code_workspace || !state.webtools.workspace_id) return;
+      if (!state.webtools.code_workspace) return;
       state.webtools.workspace_access = accessEl.value === 'read' ? 'read' : 'write';
       persistCurrentWebTools();
       renderWebTools();
@@ -5264,16 +8082,14 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       workspaceStatus(state.webtools.workspace_access === 'read' ? 'Agent access changed to read only.' : 'Agent access changed to read and edit.');
     });
 
-    const strategyEl = modal.querySelector('.workspace-strategy-select');
-    strategyEl?.addEventListener('change', ()=>{
-      if (!state.webtools.code_workspace || !state.webtools.workspace_id) return;
-      state.webtools.workspace_strategy = strategyEl.value === 'standard' ? 'standard' : 'efficient';
+    const downloadEl = modal.querySelector('.workspace-download-select');
+    downloadEl?.addEventListener('change', ()=>{
+      state.webtools.workspace_offer_download = downloadEl.value !== 'no';
       persistCurrentWebTools();
-      renderWebTools();
       renderWorkspaceList();
-      workspaceStatus(state.webtools.workspace_strategy === 'efficient'
-        ? 'Tool strategy changed to efficient.'
-        : 'Tool strategy changed to standard.');
+      workspaceStatus(state.webtools.workspace_offer_download
+        ? 'Downloads after workspace changes are enabled.'
+        : 'Downloads after workspace changes are disabled.');
     });
 
     modal.querySelector('.workspace-create-btn')?.addEventListener('click', async ()=>{
@@ -5284,7 +8100,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
         const res = await api('workspace_create', {name: name || 'Untitled workspace'});
         if (input) input.value = '';
         await refreshWorkspaceList();
-        if (res?.workspace) await selectWorkspaceForChat(res.workspace, accessEl?.value || 'read');
+        if (res?.workspace) await selectWorkspaceForChat(res.workspace, accessEl?.value || 'write');
         workspaceStatus('Workspace created.');
       } catch(ex) {
         workspaceStatus(ex?.message || 'Could not create workspace.');
@@ -5305,7 +8121,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
         if (res.status === 401 && typeof window.llcShowLogin === 'function') window.llcShowLogin(data?.error || 'Unauthorized');
         if (!res.ok) throw new Error(data?.error || 'Workspace import failed');
         await refreshWorkspaceList();
-        if (data?.workspace) await selectWorkspaceForChat(data.workspace, accessEl?.value || 'read');
+        if (data?.workspace) await selectWorkspaceForChat(data.workspace, accessEl?.value || 'write');
         workspaceStatus(`Imported ${file.name}.`);
       } catch(ex) {
         workspaceStatus(ex?.message || 'Workspace import failed.');
@@ -5364,10 +8180,10 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       renderWebTools();
       renderWorkspaceList();
       renderWorkspaceFiles();
-      workspaceStatus('Workspace detached from this chat.');
+      workspaceStatus('Code Workspace turned off for this chat.');
     });
 
-    workspaceModal = {modal, close, accessEl, strategyEl};
+    workspaceModal = {modal, close, accessEl, downloadEl};
     return workspaceModal;
   }
 
@@ -5377,38 +8193,69 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     state.webtools.workspace_id = String(ws.id);
     state.webtools.workspace_name = String(ws.name || 'Workspace');
     state.webtools.workspace_access = (access || state.webtools.workspace_access) === 'read' ? 'read' : 'write';
-    state.webtools.workspace_strategy = (strategy || state.webtools.workspace_strategy) === 'standard' ? 'standard' : 'efficient';
+    state.webtools.workspace_strategy = 'efficient';
     persistCurrentWebTools();
     renderWebTools();
     renderWorkspaceList();
     await refreshWorkspaceFiles();
   }
 
+  function applyAgentWorkspaceUpdate(ws, chat){
+    if (!ws || !chat) return;
+    const id = String(ws.id || '');
+    if (!id) return;
+    const name = String(ws.name || 'Workspace');
+    const access = String(ws.access || 'write') === 'read' ? 'read' : 'write';
+    const strategy = 'efficient';
+
+    chat.meta = chat.meta || {};
+    chat.meta.webtools = (chat.meta.webtools && typeof chat.meta.webtools === 'object') ? chat.meta.webtools : {};
+    chat.meta.webtools.code_workspace = true;
+    chat.meta.webtools.workspace_id = id;
+    chat.meta.webtools.workspace_name = name;
+    chat.meta.webtools.workspace_access = access;
+    chat.meta.webtools.workspace_strategy = strategy;
+
+    if (state.currentChat?.id === chat.id) {
+      state.webtools.code_workspace = true;
+      state.webtools.workspace_id = id;
+      state.webtools.workspace_name = name;
+      state.webtools.workspace_access = access;
+      state.webtools.workspace_strategy = strategy;
+      workspaceFiles = [];
+      renderWebTools();
+      refreshWorkspaceList().then(()=>refreshWorkspaceFiles()).catch(()=>{});
+    }
+  }
+
   function renderWorkspaceList(){
     const ref = ensureWorkspaceModal();
     const list = ref.modal.querySelector('.workspace-list');
     const accessEl = ref.accessEl;
-    const strategyEl = ref.strategyEl;
+    const downloadEl = ref.downloadEl;
     const selectedId = String(state.webtools.workspace_id || '');
-    const selected = !!state.webtools.code_workspace && !!selectedId;
+    const capabilityOn = !!state.webtools.code_workspace;
+    const selected = capabilityOn && !!selectedId;
     if (accessEl) {
       accessEl.value = state.webtools.workspace_access === 'read' ? 'read' : 'write';
-      accessEl.disabled = !selected;
+      accessEl.disabled = !capabilityOn;
     }
-    if (strategyEl) {
-      strategyEl.value = state.webtools.workspace_strategy === 'standard' ? 'standard' : 'efficient';
-      strategyEl.disabled = !selected;
+    if (downloadEl) {
+      downloadEl.value = state.webtools.workspace_offer_download === false ? 'no' : 'yes';
+      downloadEl.disabled = !capabilityOn;
     }
     const note = ref.modal.querySelector('.workspace-access-note');
     if (note) note.textContent = selected
       ? `Current mode: ${state.webtools.workspace_access === 'read' ? 'read only' : 'read and edit'}. Changes apply immediately to this chat.`
-      : 'Select a workspace first. This can be changed at any time.';
-    const strategyNote = ref.modal.querySelector('.workspace-strategy-note');
-    if (strategyNote) strategyNote.textContent = selected
-      ? (state.webtools.workspace_strategy === 'standard'
-          ? 'Standard adds no special tool-efficiency instruction.'
-          : 'Efficient tells the model to use as little context as possible, but as much as needed for a reliable result.')
-      : 'Efficient is the default and tells the model to use the smallest reliable amount of workspace context.';
+      : (capabilityOn
+          ? `Applies when the agent selects a workspace: ${state.webtools.workspace_access === 'read' ? 'read only' : 'read and edit'}.`
+          : 'Code Workspace is off.');
+    const downloadNote = ref.modal.querySelector('.workspace-download-note');
+    if (downloadNote) downloadNote.textContent = capabilityOn
+      ? (state.webtools.workspace_offer_download === false
+          ? 'The agent will only attach workspace downloads when you explicitly ask for them.'
+          : 'After file changes, the agent should attach one changed file directly or a ZIP when several files were changed.')
+      : 'This preference applies when Code Workspace is enabled for this chat.';
     if (!list) return;
     list.innerHTML = '';
     const items = Array.isArray(state.workspaces) ? state.workspaces : [];
@@ -5434,10 +8281,9 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       meta.className = 'workspace-row-meta';
       const files = Number(ws.file_count || 0);
       const access = isSelected ? ` · ${state.webtools.workspace_access === 'read' ? 'read only' : 'read and edit'}` : '';
-      const strategy = isSelected ? ` · ${state.webtools.workspace_strategy === 'standard' ? 'standard' : 'efficient'}` : '';
-      meta.textContent = `${files} file${files === 1 ? '' : 's'}${isSelected ? ' · active' : ''}${access}${strategy}`;
+      meta.textContent = `${files} file${files === 1 ? '' : 's'}${isSelected ? ' · active' : ''}${access}`;
       info.append(name, meta);
-      info.addEventListener('click', ()=>selectWorkspaceForChat(ws, accessEl?.value || 'read'));
+      info.addEventListener('click', ()=>selectWorkspaceForChat(ws, accessEl?.value || 'write'));
 
       const rename = document.createElement('button');
       rename.type = 'button';
@@ -5492,7 +8338,6 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
         try {
           await api('workspace_delete', {id:String(ws.id || '')});
           if (isSelected) {
-            state.webtools.code_workspace = false;
             state.webtools.workspace_id = '';
             state.webtools.workspace_name = '';
             workspaceFiles = [];
@@ -5614,7 +8459,6 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       if (active) {
         state.webtools.workspace_name = String(active.name || state.webtools.workspace_name || 'Workspace');
       } else if (state.webtools.code_workspace) {
-        state.webtools.code_workspace = false;
         state.webtools.workspace_id = '';
         state.webtools.workspace_name = '';
         workspaceFiles = [];
@@ -5646,17 +8490,20 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
 
   const webOn = !!state.webtools?.web;
   const searchOn = !!state.webtools?.search;
+  const ragOn = !!state.webtools?.rag;
   const imageOn = !!state.webtools?.image;
   const documentOn = !!state.webtools?.document;
-  const workspaceOn = !!state.webtools?.code_workspace && !!String(state.webtools?.workspace_id || '');
+  const workspaceOn = !!state.webtools?.code_workspace;
   const customSet = enabledCustomTools();
   const customOn = customSet.size > 0;
+  const mcpSet = enabledMcpServers();
+  const mcpOn = mcpSet.size > 0;
 
   const prov = String(state.ui.searchProvider || 'serper');
   const searchConfigured = isSearchConfigured();
   const imageConfigured = isImageConfigured();
 
-  webToolsBtn.classList.toggle('active', webOn || searchOn || imageOn || documentOn || workspaceOn || customOn);
+  webToolsBtn.classList.toggle('active', webOn || searchOn || ragOn || imageOn || documentOn || workspaceOn || customOn || mcpOn);
   webToolsBtn.classList.toggle('document-active', documentOn);
 
   const webItem = webToolsMenu.querySelector('.webtools-item[data-action="web"]');
@@ -5674,10 +8521,47 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     if (sub) {
       const label = (prov === 'serper') ? 'Serper'
         : (prov === 'brave') ? 'Brave'
-        : (prov === 'searchngx') ? 'SearchNGX'
+        : (prov === 'exa') ? 'Exa'
+        : (prov === 'searchngx') ? 'SearXNG'
         : (prov === 'custom') ? 'Custom'
         : 'Search';
       sub.textContent = canUse ? `Search (${label})` : 'Configure in Settings → Search';
+    }
+  }
+
+  const ragItem = webToolsMenu.querySelector('.webtools-item[data-action="rag-toggle-menu"]');
+  if (ragItem) {
+    const canUse = !!state.ui.ragAvailable;
+    const chatMode = normalizeChatRagMode(state.webtools?.rag_mode);
+    const effective = effectiveRagMode();
+    const caps = currentRagCapabilities();
+    const capsPending = state.ragCapabilityPending.has(ragCapabilityKey());
+    const preciseAvailable = caps ? !!caps.precise : null;
+    const ragPanelOpen = !!(webToolsRagList && !webToolsRagList.classList.contains('hidden'));
+    ragItem.classList.toggle('active', ragOn);
+    ragItem.toggleAttribute('disabled', !canUse);
+    ragItem.classList.toggle('disabled', !canUse);
+    ragItem.setAttribute('aria-expanded', ragPanelOpen ? 'true' : 'false');
+    const sub = ragItem.querySelector('.wt-sub');
+    if (sub) {
+      const effectiveLabel = (preciseAvailable === false && effective === 'precise') ? 'Precise unavailable' : ragModeLabel(effective);
+      sub.textContent = canUse
+        ? (ragOn ? effectiveLabel : `Off · ${ragModeLabel(state.ui.ragDefaultMode)}`)
+        : 'Configure in Settings → RAG';
+    }
+    if (webToolsRagList) {
+      webToolsRagList.querySelectorAll('[data-action="rag-mode"]').forEach(btn=>{
+        const mode = String(btn.dataset.mode || '');
+        const active = mode === 'off' ? !ragOn : (ragOn && mode === effective);
+        btn.classList.toggle('active', active);
+        if (mode === 'precise') {
+          // Do not flash Precise before the lazy status check has completed.
+          // A failed/negative capability check keeps it absent; there is no
+          // background polling.
+          btn.classList.toggle('hidden', capsPending || preciseAvailable !== true);
+          btn.disabled = preciseAvailable !== true;
+        }
+      });
     }
   }
 
@@ -5699,15 +8583,28 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       sub.textContent = canUse ? label : 'Configure in Settings → Image';
     }
   }
-  const workspaceItem = webToolsMenu.querySelector('.webtools-item[data-action="code-workspace"]');
+  const workspaceItem = webToolsMenu.querySelector('.webtools-item[data-action="code-workspace-toggle-menu"]');
   if (workspaceItem) {
+    const workspacePanelOpen = !!(webToolsWorkspaceList && !webToolsWorkspaceList.classList.contains('hidden'));
     workspaceItem.classList.toggle('active', workspaceOn);
+    workspaceItem.setAttribute('aria-expanded', workspacePanelOpen ? 'true' : 'false');
     const sub = workspaceItem.querySelector('.wt-sub');
     if (sub) {
       const name = String(state.webtools?.workspace_name || '').trim();
-      const access = String(state.webtools?.workspace_access || 'read') === 'write' ? 'edit' : 'read only';
-      const strategy = String(state.webtools?.workspace_strategy || 'efficient') === 'standard' ? 'standard' : 'efficient';
-      sub.textContent = workspaceOn ? `${name || 'Workspace'} · ${access} · ${strategy}` : 'Select a project workspace';
+      const access = String(state.webtools?.workspace_access || 'write') === 'read' ? 'read only' : 'edit';
+      sub.textContent = workspaceOn
+        ? (String(state.webtools?.workspace_id || '') ? `On · ${name || 'Workspace'} · ${access}` : `On · new or explicitly selected workspace · ${access}`)
+        : 'Off';
+    }
+  }
+  if (webToolsWorkspaceList) {
+    const toggle = webToolsWorkspaceList.querySelector('[data-action="workspace-toggle"]');
+    if (toggle) {
+      toggle.classList.toggle('active', workspaceOn);
+      const title = toggle.querySelector('.wt-title');
+      const sub = toggle.querySelector('.wt-sub');
+      if (title) title.textContent = workspaceOn ? 'On' : 'Off';
+      if (sub) sub.textContent = workspaceOn ? 'Workspace tools enabled for this chat' : 'Workspace tools disabled for this chat';
     }
   }
   const documentItem = webToolsMenu.querySelector('.webtools-item[data-action="document"]');
@@ -5752,6 +8649,30 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       }
     }
   }
+  const mcpToggle = webToolsMenu.querySelector('.webtools-item[data-action="mcp-servers-toggle"]');
+  const mcpServers = Array.isArray(state.ui.mcpServers) ? state.ui.mcpServers : [];
+  const mcpPanelOpen = !!(webToolsMcpList && !webToolsMcpList.classList.contains('hidden'));
+  if (mcpToggle) {
+    mcpToggle.classList.toggle('active', mcpOn);
+    mcpToggle.setAttribute('aria-expanded', mcpPanelOpen ? 'true' : 'false');
+    const sub = mcpToggle.querySelector('.wt-sub');
+    if (sub) sub.textContent = mcpServers.length ? `${mcpSet.size}/${mcpServers.length} active` : 'Configure in Settings → MCP';
+  }
+  if (webToolsMcpList) {
+    webToolsMcpList.innerHTML = '';
+    if (!mcpServers.length) {
+      const empty=document.createElement('div'); empty.className='webtools-custom-empty'; empty.textContent='No MCP servers yet.'; webToolsMcpList.appendChild(empty);
+    } else {
+      for (const server of mcpServers) {
+        const key=mcpServerKey(server); if (!key) continue;
+        const btn=document.createElement('button'); btn.type='button'; btn.className='webtools-custom-tool'+(mcpSet.has(key)?' active':'');
+        btn.dataset.action='mcp-server'; btn.dataset.server=key;
+        const desc=String(server.description || server.url || '').trim();
+        btn.innerHTML=`<span class="wt-check" aria-hidden="true"></span><div class="wt-text"><div class="wt-title">${esc(mcpServerTitle(server))}</div><div class="wt-sub">${esc(desc ? desc.slice(0,90) : key)}</div></div>`;
+        webToolsMcpList.appendChild(btn);
+      }
+    }
+  }
   renderDocumentUI();
 
 
@@ -5765,22 +8686,35 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     state.currentChat.meta.webtools = {
       web: !!state.webtools.web,
       search: !!state.webtools.search,
+      rag: !!state.webtools.rag,
+      rag_mode: normalizeChatRagMode(state.webtools.rag_mode),
       image: !!state.webtools.image,
       document: !!state.webtools.document,
       code_workspace: !!state.webtools.code_workspace,
       workspace_id: String(state.webtools.workspace_id || ''),
       workspace_name: String(state.webtools.workspace_name || ''),
-      workspace_access: String(state.webtools.workspace_access || 'read'),
-      workspace_strategy: String(state.webtools.workspace_strategy || 'efficient'),
-      custom_tools: Array.isArray(state.webtools.custom_tools) ? state.webtools.custom_tools : []
+      workspace_access: String(state.webtools.workspace_access || 'write'),
+      workspace_strategy: 'efficient',
+      workspace_offer_download: state.webtools.workspace_offer_download !== false,
+      custom_tools: Array.isArray(state.webtools.custom_tools) ? state.webtools.custom_tools : [],
+      mcp_servers: Array.isArray(state.webtools.mcp_servers) ? state.webtools.mcp_servers : []
     };
     saveChat(state.currentChat).catch(()=>{});
   }
 
   function closeCustomToolsFlyout(){
     webToolsCustomList?.classList.add('hidden');
+    webToolsMcpList?.classList.add('hidden');
+    webToolsRagList?.classList.add('hidden');
+    webToolsWorkspaceList?.classList.add('hidden');
+    const ragToggle = webToolsMenu?.querySelector('.webtools-item[data-action="rag-toggle-menu"]');
+    const workspaceToggle = webToolsMenu?.querySelector('.webtools-item[data-action="code-workspace-toggle-menu"]');
     const customToggle = webToolsMenu?.querySelector('.webtools-item[data-action="custom-tools-toggle"]');
+    const mcpToggle = webToolsMenu?.querySelector('.webtools-item[data-action="mcp-servers-toggle"]');
+    ragToggle?.setAttribute('aria-expanded', 'false');
+    workspaceToggle?.setAttribute('aria-expanded', 'false');
     customToggle?.setAttribute('aria-expanded', 'false');
+    mcpToggle?.setAttribute('aria-expanded', 'false');
   }
 
   function toggleWebToolsMenu(){
@@ -5794,25 +8728,91 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   }
 
   webToolsBtn?.addEventListener('click', (e)=>{ e.preventDefault(); e.stopPropagation(); toggleWebToolsMenu(); renderWebTools(); });
-  webToolsMenu?.addEventListener('click', (e)=>{
+  webToolsMenu?.addEventListener('click', async (e)=>{
   e.preventDefault();
   e.stopPropagation();
   const item = e.target.closest('.webtools-item, .webtools-custom-tool');
   if (!item) return;
   const action = item.dataset.action;
 
-  if (action === 'custom-tools-toggle') {
-    if (webToolsCustomList) webToolsCustomList.classList.toggle('hidden');
+  if (action === 'rag-toggle-menu') {
+    if (item.hasAttribute('disabled')) return;
+    webToolsCustomList?.classList.add('hidden');
+    webToolsMcpList?.classList.add('hidden');
+    webToolsWorkspaceList?.classList.add('hidden');
+    const opening = !!(webToolsRagList && webToolsRagList.classList.contains('hidden'));
+    if (webToolsRagList) webToolsRagList.classList.toggle('hidden');
+    renderWebTools();
+    if (opening) await ensureRagCapabilities(state.currentChat);
     renderWebTools();
     return;
   }
-  if (action === 'code-workspace') {
+  if (action === 'rag-mode') {
+    const mode = String(item.dataset.mode || '').toLowerCase();
+    if (mode === 'precise' && currentRagCapabilities()?.precise !== true) return;
+    if (mode === 'off') {
+      state.webtools.rag = false;
+    } else if (['dense','hybrid','precise'].includes(mode)) {
+      state.webtools.rag = true;
+      // Selecting the current personal default silently removes the chat
+      // override, so future Settings changes can still flow through.
+      state.webtools.rag_mode = mode === normalizeRagMode(state.ui.ragDefaultMode, 'hybrid') ? 'default' : mode;
+    } else {
+      return;
+    }
+    webToolsRagList?.classList.add('hidden');
+    persistCurrentWebTools();
+    renderWebTools();
+    return;
+  }
+
+  if (action === 'custom-tools-toggle') {
+    webToolsRagList?.classList.add('hidden');
+    webToolsMcpList?.classList.add('hidden');
+    webToolsWorkspaceList?.classList.add('hidden');
+    if (webToolsCustomList) webToolsCustomList.classList.toggle('hidden');
+    renderWebTools(); return;
+  }
+  if (action === 'mcp-servers-toggle') {
+    webToolsRagList?.classList.add('hidden');
+    webToolsCustomList?.classList.add('hidden');
+    webToolsWorkspaceList?.classList.add('hidden');
+    if (webToolsMcpList) webToolsMcpList.classList.toggle('hidden');
+    renderWebTools(); return;
+  }
+  if (action === 'code-workspace-toggle-menu') {
+    webToolsRagList?.classList.add('hidden');
+    webToolsCustomList?.classList.add('hidden');
+    webToolsMcpList?.classList.add('hidden');
+    if (webToolsWorkspaceList) webToolsWorkspaceList.classList.toggle('hidden');
+    renderWebTools();
+    return;
+  }
+  if (action === 'workspace-toggle') {
+    const next = !state.webtools.code_workspace;
+    state.webtools.code_workspace = next;
+    // Enabling the capability never silently reuses an old project. A workspace
+    // becomes active only through an explicit manager selection or an agent action.
+    state.webtools.workspace_id = '';
+    state.webtools.workspace_name = '';
+    workspaceFiles = [];
+    persistCurrentWebTools();
+    renderWebTools();
+    renderWorkspaceList();
+    renderWorkspaceFiles();
+    return;
+  }
+  if (action === 'workspace-manager') {
     webToolsMenu.classList.remove('show');
     webToolsBtn?.setAttribute('aria-expanded','false');
+    closeCustomToolsFlyout();
     openWorkspaceModal();
     return;
   }
-  if (action === 'custom-tool') {
+  if (action === 'mcp-server') {
+    const key=String(item.dataset.server || '').trim(); const set=enabledMcpServers();
+    if (set.has(key)) set.delete(key); else if (key) set.add(key); setEnabledMcpServers(set);
+  } else if (action === 'custom-tool') {
     const key = String(item.dataset.tool || item.dataset.toolName || '').trim();
     const name = String(item.dataset.toolName || key).trim();
     const set = enabledCustomTools();
@@ -5854,11 +8854,168 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     }
   });
 
-  settingCustomToolsSave?.addEventListener('click', saveCustomToolsFromSettings);
+  settingCustomToolsJson?.addEventListener('change', saveCustomToolsFromSettings);
   settingCustomToolsFormat?.addEventListener('click', ()=>{
     if (!settingCustomToolsJson) return;
-    try { settingCustomToolsJson.value = JSON.stringify(JSON.parse(String(settingCustomToolsJson.value || '[]')), null, 2); }
-    catch(ex){ if (settingCustomToolsStatus) settingCustomToolsStatus.textContent = 'Invalid JSON: ' + (ex?.message || ex); }
+    try { settingCustomToolsJson.value = JSON.stringify(JSON.parse(String(settingCustomToolsJson.value || '[]')), null, 2); customToolSetPageStatus('Raw configuration formatted.'); }
+    catch(ex){ customToolSetPageStatus('Invalid JSON: ' + (ex?.message || ex),'err'); }
+  });
+  customToolAddBtn?.addEventListener('click',()=>openCustomToolEditor(-1));
+  customToolEditorClose?.addEventListener('click',closeCustomToolEditor);
+  customToolEditorCancel?.addEventListener('click',closeCustomToolEditor);
+  customToolEditorModal?.querySelector('[data-custom-tool-close]')?.addEventListener('click',closeCustomToolEditor);
+  customToolHeaderAdd?.addEventListener('click',()=>customToolAddHeaderRow());
+  customToolHeaderList?.addEventListener('click',(event)=>{
+    const button=event.target.closest('.custom-tool-header-remove');
+    if (!button) return;
+    button.closest('.custom-tool-header-row')?.remove();
+    customToolRefreshHeaderEmpty();
+  });
+  customToolParameterAdd?.addEventListener('click',()=>customToolAddParameterRow());
+  customToolParameterList?.addEventListener('click',(event)=>{
+    const button=event.target.closest('.custom-tool-param-remove');
+    if (!button) return;
+    button.closest('.custom-tool-parameter-row')?.remove();
+    customToolRefreshParameterEmpty();
+  });
+  customToolEditMethod?.addEventListener('change',customToolSyncBodyUI);
+  customToolEditBodyMode?.addEventListener('change',customToolSyncBodyUI);
+  customToolEditId?.addEventListener('input',()=>{ customToolEditorIdWasEdited=true; });
+  customToolEditName?.addEventListener('input',()=>{
+    if (customToolEditorIdWasEdited || !customToolEditId) return;
+    customToolEditId.value=customToolFunctionName(customToolEditName.value);
+  });
+  customToolEditorApply?.addEventListener('click',async()=>{
+    if (customToolEditorApply) customToolEditorApply.disabled=true;
+    try {
+      const tool=collectCustomToolEditorTool();
+      const tools=customToolsCurrent();
+      const index=Number(customToolEditIndex?.value || -1);
+      const duplicateName=tools.findIndex((item,i)=>item.name===tool.name && i!==index);
+      if (duplicateName>=0) throw new Error(`Another custom tool already uses the function name “${tool.name}”.`);
+      const duplicateId=tools.findIndex((item,i)=>customToolKey(item)===tool.id && i!==index);
+      if (duplicateId>=0) throw new Error(`Another custom tool already uses the ID “${tool.id}”.`);
+      if (index>=0 && index<tools.length) tools[index]=tool; else tools.push(tool);
+      await persistCustomTools(tools,`${tool.title} updated.`);
+      closeCustomToolEditor();
+    } catch(ex) {
+      customToolSetEditorResult('err',String(ex?.message || ex));
+    } finally {
+      if (customToolEditorApply) customToolEditorApply.disabled=false;
+    }
+  });
+  customToolsList?.addEventListener('click',async(event)=>{
+    const button=event.target.closest('[data-custom-tool-cmd]');
+    if (!button) return;
+    const index=Number(button.dataset.index);
+    const tools=customToolsCurrent();
+    const tool=tools[index];
+    if (!tool) return;
+    const command=String(button.dataset.customToolCmd || '');
+    if (command==='edit') { openCustomToolEditor(index); return; }
+    if (command==='delete') {
+      if (!confirm(`Delete custom tool “${customToolTitle(tool)}”?`)) return;
+      tools.splice(index,1);
+      try { await persistCustomTools(tools,`${customToolTitle(tool)} deleted.`); }
+      catch(ex){ customToolSetPageStatus(ex?.message || 'Could not delete custom tool.','err'); }
+    }
+  });
+  settingMcpServersAutoEnable?.addEventListener('change', async ()=>{
+    state.ui.mcpServersAutoEnable=!!settingMcpServersAutoEnable.checked;
+    try { await api('settings_save',{mcp_servers_auto_enable:state.ui.mcpServersAutoEnable?1:0}); }
+    catch(ex){ mcpSetPageStatus(ex?.message || 'Could not save MCP default.', 'err'); return; }
+    const hasOverride=!!(state.currentChat?.meta && state.currentChat.meta.webtools);
+    if (!hasOverride) { state.webtools.mcp_servers=defaultMcpServerIds(); renderWebTools(); }
+    mcpSetPageStatus(state.ui.mcpServersAutoEnable ? 'Configured MCP servers will be active in new chats.' : 'New chats start without MCP servers.', 'ok');
+  });
+  settingMcpContextMode?.addEventListener('change',()=>{
+    const externalize = String(settingMcpContextMode.value || 'full') === 'externalize';
+    mcpContextLimits?.classList.toggle('disabled', !externalize);
+    saveMcpContextSettings();
+  });
+  settingMcpExternalizeAbove?.addEventListener('change', saveMcpContextSettings);
+  settingMcpPreviewMax?.addEventListener('change', saveMcpContextSettings);
+  settingMcpFullPassMax?.addEventListener('change', saveMcpContextSettings);
+  settingMcpServersJson?.addEventListener('change', saveMcpServersFromSettings);
+  settingMcpServersTest?.addEventListener('click',testMcpServersFromSettings);
+  settingMcpServersFormat?.addEventListener('click',()=>{
+    if (!settingMcpServersJson) return;
+    try { settingMcpServersJson.value=JSON.stringify(JSON.parse(String(settingMcpServersJson.value || '[]')),null,2); mcpSetPageStatus('Raw JSON formatted.'); }
+    catch(ex){ mcpSetPageStatus('Invalid JSON: '+(ex?.message || ex), 'err'); }
+  });
+
+  mcpAddBtn?.addEventListener('click',()=>openMcpEditor(-1));
+  mcpEditorClose?.addEventListener('click',closeMcpEditor);
+  mcpEditorCancel?.addEventListener('click',closeMcpEditor);
+  mcpEditorModal?.querySelector('[data-mcp-close]')?.addEventListener('click',closeMcpEditor);
+  mcpEditAuthEnabled?.addEventListener('change',()=>mcpSetAuthEnabled(!!mcpEditAuthEnabled.checked));
+  mcpHeaderAdd?.addEventListener('click',()=>mcpAddHeaderRow());
+  mcpHeaderList?.addEventListener('click',(event)=>{
+    const button=event.target.closest('.mcp-header-remove');
+    if (!button) return;
+    button.closest('.mcp-header-row')?.remove();
+    mcpRefreshHeaderEmpty();
+  });
+  mcpTokenReveal?.addEventListener('click',()=>{
+    if (!mcpEditToken) return;
+    const reveal=mcpEditToken.type==='password';
+    mcpEditToken.type=reveal?'text':'password';
+    mcpEditToken.classList.toggle('is-revealed', reveal);
+    mcpTokenReveal.textContent=reveal?'Hide':'Show';
+  });
+  mcpEditId?.addEventListener('input',()=>{ mcpEditorIdWasEdited=true; });
+  mcpEditName?.addEventListener('input',()=>{
+    if (mcpEditorIdWasEdited || !mcpEditId) return;
+    mcpEditId.value=mcpServerKey({id:mcpEditName.value});
+  });
+  mcpEditorTest?.addEventListener('click',async()=>{
+    try { await testMcpServer(collectMcpEditorServer(),{editor:true}); }
+    catch(_) { /* rendered in editor */ }
+  });
+  mcpEditorSave?.addEventListener('click',async()=>{
+    if (mcpEditorSave) mcpEditorSave.disabled=true;
+    try {
+      const server=collectMcpEditorServer();
+      const servers=mcpCurrentServers();
+      const index=Number(mcpEditIndex?.value || -1);
+      const duplicate=servers.findIndex((item,i)=>mcpServerKey(item)===server.id && i!==index);
+      if (duplicate>=0) throw new Error(`Another MCP server already uses the ID “${server.id}”.`);
+      if (index>=0 && index<servers.length) servers[index]=server;
+      else servers.push(server);
+      await persistMcpServers(servers, `${server.name} saved.`);
+      closeMcpEditor();
+    } catch(ex) {
+      mcpSetEditorResult('err',[String(ex?.message || ex)]);
+    } finally {
+      if (mcpEditorSave) mcpEditorSave.disabled=false;
+    }
+  });
+
+  mcpList?.addEventListener('click',async(event)=>{
+    const button=event.target.closest('[data-mcp-cmd]');
+    if (!button) return;
+    const index=Number(button.dataset.index);
+    const servers=mcpCurrentServers();
+    const server=servers[index];
+    if (!server) return;
+    const command=String(button.dataset.mcpCmd || '');
+    if (command==='edit') { openMcpEditor(index); return; }
+    if (command==='test') {
+      button.disabled=true;
+      try { await testMcpServer(server); } catch(_) { /* card shows error */ }
+      finally { button.disabled=false; }
+      return;
+    }
+    if (command==='delete') {
+      if (!confirm(`Delete MCP server “${mcpServerTitle(server)}”?`)) return;
+      servers.splice(index,1);
+      try { await persistMcpServers(servers, `${mcpServerTitle(server)} deleted.`); }
+      catch(ex){ mcpSetPageStatus(ex?.message || 'Could not delete MCP server.', 'err'); }
+    }
+  });
+  document.addEventListener('keydown',(event)=>{
+    if (event.key==='Escape' && customToolEditorModal && !customToolEditorModal.classList.contains('hidden')) { closeCustomToolEditor(); return; }
+    if (event.key==='Escape' && mcpEditorModal && !mcpEditorModal.classList.contains('hidden')) closeMcpEditor();
   });
 
   // initial state
@@ -5868,7 +9025,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   const MAX_WEB_PAGES_PER_SEND = 3;
   const webFetchLimit = ()=>{
     // 0 = unlimited
-    return normalizeWebLimit(state.ui.webFetchMaxChars ?? 20000, 20000);
+    return normalizeWebLimit(state.ui.webFetchMaxChars ?? 50000, 50000);
   };
   const URL_RE = /https?:\/\/[\w\-._~:/?#\[\]@!$&'()*+,;=%]+/ig;
 
@@ -6022,6 +9179,7 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     if (!item) return;
     const action = item.dataset.action;
     if (action==='files') fileInput.click();
+    if (action==='documents') await openDocumentLibrary();
     if (action==='url'){
       const u = prompt('Add URL:');
       if (u && u.trim()) {
@@ -6048,16 +9206,208 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     renderAttachments(); syncSend();
   });
 
-  async function uploadFile(file){
-    const fd = new FormData();
-    fd.append('file', file, file.name);
-    const res = await fetch('api.php?action=file_upload', {method:'POST', body: fd});
-    const ct = res.headers.get('content-type')||'';
-    if(!res.ok){
-      const t = ct.includes('application/json') ? (await res.json()).error : await res.text();
-      throw new Error(t);
+  async function uploadFile(file, options={}){
+    const rag = !!options?.rag;
+    const onUploadProgress = (typeof options?.onUploadProgress === 'function') ? options.onUploadProgress : null;
+
+    // Fetch has no portable upload progress events. Use XHR only when the caller
+    // actually needs byte-level progress (RAG indexing UI); keep the original
+    // fetch path for all ordinary uploads.
+    if (!onUploadProgress && !rag) {
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      const res = await fetch('api.php?action=file_upload', {method:'POST', body: fd});
+      const ct = res.headers.get('content-type')||'';
+      if(!res.ok){
+        const t = ct.includes('application/json') ? (await res.json()).error : await res.text();
+        throw new Error(t);
+      }
+      return res.json();
     }
-    return res.json();
+
+    return new Promise((resolve, reject)=>{
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', 'api.php?action=file_upload', true);
+      xhr.responseType = 'text';
+      xhr.upload.onprogress = (ev)=>{
+        if (!onUploadProgress || !ev.lengthComputable) return;
+        const loaded = Math.max(0, Number(ev.loaded)||0);
+        const total = Math.max(0, Number(ev.total)||0);
+        const percent = total > 0 ? Math.max(0, Math.min(100, (loaded / total) * 100)) : null;
+        onUploadProgress({loaded,total,percent});
+      };
+      xhr.onerror = ()=>reject(new Error('Upload failed'));
+      xhr.onabort = ()=>reject(new Error('Upload aborted'));
+      xhr.onload = ()=>{
+        let data = null;
+        try { data = JSON.parse(String(xhr.responseText || '')); } catch(_){ data = null; }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const msg = data?.error || String(xhr.responseText || `${xhr.status} ${xhr.statusText}`);
+          reject(new Error(msg));
+          return;
+        }
+        if (!data || typeof data !== 'object') {
+          reject(new Error('Upload returned invalid JSON'));
+          return;
+        }
+        resolve(data);
+      };
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      if (rag) fd.append('rag', '1');
+      xhr.send(fd);
+    });
+  }
+
+  const sleep = (ms)=>new Promise(resolve=>setTimeout(resolve, Math.max(0, Number(ms)||0)));
+
+  function ragPhaseLabel(stateName){
+    const s = String(stateName || '').toLowerCase();
+    if (s === 'queued') return 'Queued';
+    if (s === 'chunking') return 'Chunking';
+    if (s === 'embedding') return 'Embedding';
+    if (s === 'storing') return 'Storing index';
+    if (s === 'ready') return 'Ready';
+    if (s === 'failed') return 'Failed';
+    return s || 'Indexing';
+  }
+
+  async function waitForRagJob(jobId, attachment){
+    const started = Date.now();
+    const maxMs = 60 * 60 * 1000;
+    let lastError = null;
+    while ((Date.now() - started) < maxMs) {
+      let job;
+      try {
+        job = await api('rag_job', {job_id:String(jobId || '')});
+        lastError = null;
+      } catch (err) {
+        lastError = err;
+        await sleep(1200);
+        continue;
+      }
+
+      const stateName = String(job?.state || 'queued');
+      const done = Math.max(0, Number(job?.done)||0);
+      const total = Math.max(0, Number(job?.total)||0);
+      const chunks = Math.max(0, Number(job?.chunks)||0);
+      const pctRaw = Number(job?.percent);
+      const pct = Number.isFinite(pctRaw) ? Math.max(0, Math.min(100, pctRaw)) : (total > 0 ? (done / total) * 100 : null);
+      const phase = ragPhaseLabel(stateName);
+
+      if (attachment) {
+        attachment.rag_state = stateName;
+        attachment.rag_done = done;
+        attachment.rag_total = total;
+        attachment.rag_chunks = chunks || attachment.rag_chunks || 0;
+        attachment.meta = stateName === 'ready'
+          ? `RAG · ${attachment.rag_chunks || total || 0} chunks`
+          : `RAG · ${phase}${total > 0 ? ` ${Math.round(done)} / ${Math.round(total)}` : ''}`;
+        renderAttachments();
+        syncSend();
+      }
+
+      updateRagRuntimeActivity({
+        title: stateName === 'ready' ? 'RAG document ready' : 'Indexing RAG document',
+        detail: `${String(attachment?.name || 'Document')} · ${phase}${total > 0 ? ` · ${Math.round(done)} / ${Math.round(total)} chunks` : ''}${pct != null ? ` · ${Math.round(pct)}%` : ''}`,
+        percent: stateName === 'ready' ? 100 : pct
+      });
+
+      if (stateName === 'ready') {
+        if (attachment) {
+          attachment.rag_chunks = chunks || total || attachment.rag_chunks || 0;
+          attachment.meta = `RAG · ${attachment.rag_chunks} chunks`;
+          renderAttachments();
+          syncSend();
+        }
+        clearRagRuntimeActivity(1400);
+        return job;
+      }
+      if (stateName === 'failed') {
+        const msg = String(job?.error || 'RAG indexing failed');
+        updateRagRuntimeActivity({title:'RAG indexing failed', detail:`${String(attachment?.name || 'Document')} · ${msg}`, percent:null});
+        throw new Error(msg);
+      }
+      await sleep(700);
+    }
+    throw lastError || new Error('RAG indexing timed out');
+  }
+
+  async function addRagFileAttachment(file, id, kind){
+    const name = String(file?.name || 'document');
+    const provisional = {
+      id,
+      type:'rag',
+      name,
+      meta:'RAG · Uploading 0%',
+      mime:String(file?.type || 'application/octet-stream'),
+      size:Number(file?.size || 0),
+      rag_state:'uploading',
+      rag_document_id:'',
+      rag_chunks:0,
+      rag_embedding_model:''
+    };
+    state.attachments.push(provisional);
+    renderAttachments();
+    syncSend();
+
+    setRagRuntimeActivity({
+      title:'Preparing RAG document',
+      detail:`${name} · Uploading · 0%`,
+      percent:0
+    });
+
+    try {
+      let saw100 = false;
+      const up = await uploadFile(file, {
+        rag:true,
+        onUploadProgress:({loaded,total,percent})=>{
+          const pct = percent == null ? null : Math.round(percent);
+          provisional.rag_state = 'uploading';
+          provisional.meta = `RAG · Uploading${pct == null ? '' : ` ${pct}%`}`;
+          if (pct != null && pct >= 100) saw100 = true;
+          renderAttachments();
+          updateRagRuntimeActivity({
+            title:'Preparing RAG document',
+            detail: pct != null && pct >= 100
+              ? `${name} · Extracting text…`
+              : `${name} · Uploading${pct == null ? '' : ` · ${pct}%`}`,
+            percent: pct != null && pct >= 100 ? null : pct
+          });
+        }
+      });
+
+      // The upload body may already be on the server while PHP is still
+      // extracting PDF/DOCX text. Make that waiting phase explicit.
+      if (saw100) updateRagRuntimeActivity({title:'Preparing RAG document', detail:`${name} · Extracting text…`, percent:null});
+
+      const rr = up?.rag || {};
+      const jobId = String(rr.job_id || '');
+      const documentId = String(rr.document_id || '');
+      if (!jobId || !documentId) throw new Error('RAG server did not return an indexing job');
+
+      provisional.url = String(up.url || '');
+      provisional.file_id = String(up.id || '');
+      provisional.mime = String(up.mime || provisional.mime || 'application/octet-stream');
+      provisional.size = Number(up.size || provisional.size || 0);
+      provisional.rag_document_id = documentId;
+      provisional.rag_job_id = jobId;
+      provisional.rag_embedding_model = String(rr.embedding_model || '');
+      provisional.rag_state = String(rr.state || 'queued');
+      provisional.meta = `RAG · ${ragPhaseLabel(provisional.rag_state)}`;
+      renderAttachments();
+
+      await waitForRagJob(jobId, provisional);
+      return provisional;
+    } catch (err) {
+      provisional.rag_state = 'failed';
+      provisional.rag_error = String(err?.message || err);
+      provisional.meta = 'RAG · Failed';
+      renderAttachments();
+      syncSend();
+      updateRagRuntimeActivity({title:'RAG indexing failed', detail:`${name} · ${provisional.rag_error}`, percent:null});
+      throw err;
+    }
   }
 
   // ---- File readers (client-side inline attachments) ----
@@ -6067,13 +9417,6 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     r.onload = ()=>resolve(String(r.result||''));
     r.readAsDataURL(file);
   });
-  const readAsText = (file)=>new Promise((resolve, reject)=>{
-    const r = new FileReader();
-    r.onerror = ()=>reject(new Error('Failed to read file'));
-    r.onload = ()=>resolve(String(r.result||''));
-    r.readAsText(file);
-  });
-
   const TEXT_EXT = new Set([
     'txt','md','markdown','rst','csv','tsv','json','jsonl','xml','yaml','yml','toml','ini','conf','log',
     'html','htm','css','js','ts','jsx','tsx','py','php','java','c','h','cpp','hpp','rs','go','rb','sh','bash','zsh','sql'
@@ -6115,6 +9458,16 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     const isXlsx = mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || ext === 'xlsx';
     const isOds = mime === 'application/vnd.oasis.opendocument.spreadsheet' || ext === 'ods';
     const isText = mime.startsWith('text/') || TEXT_EXT.has(ext);
+    const isRagIndexable = isText || isPdf || isDocx || isOdt || isXlsx || isOds;
+
+    // RAG is an explicit mode switch. When it is ON, document-like uploads are
+    // sent once to PHP; PHP extracts and hands the text directly to ragd. The
+    // browser receives only file/job metadata and polls real indexing progress.
+    if (state.webtools?.rag && isRagIndexable) {
+      const kind = isPdf ? 'PDF' : (isDocx ? 'DOCX' : (isOdt ? 'ODT' : (isXlsx ? 'XLSX' : (isOds ? 'ODS' : 'Text'))));
+      await addRagFileAttachment(f, id, kind);
+      return;
+    }
 
     // Images: optionally inline as data URL (portable but DB-heavy), or store only in uploads.
     // When stored only as a file URL, the backend re-loads/encodes it for multimodal requests.
@@ -6188,61 +9541,22 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
       return;
     }
 
-    // Text-ish: inline as text.
-    if (isText) {
-      const txt = await readAsText(f);
-      state.attachments.push({
+    // Normal documents remain text attachments semantically, exactly like the
+    // old UI/model path. The only change is storage: the chat keeps file_id and
+    // metadata, while the full extraction is read from the one HDD copy on demand.
+    if (isRagIndexable) {
+      const up = await uploadFile(f);
+      const att = {
         id,
         type: 'text',
-        name,
-        meta: `${human(f.size)} · inline`,
-        text: txt,
-        mime: mime || 'text/plain',
-        size: Number(f.size||0),
-        truncated: false
-      });
-      return;
-    }
-
-    // PDFs + DOCX/ODT + XLSX/ODS: server-side text extraction.
-    if (isPdf || isDocx || isOdt || isXlsx || isOds) {
-      const up = await uploadFile(f);
-      const extracted = String(up.extracted_text || '');
-      const err = String(up.extract_error || '');
-
-      const kind = isPdf ? 'PDF' : (isDocx ? 'DOCX' : (isOdt ? 'ODT' : (isXlsx ? 'XLSX' : 'ODS')));
-
-      if (extracted.trim()) {
-        const delNote = '';
-        state.attachments.push({
-          id,
-          type: 'text',
-          name,
-          meta: `${human(up.size)} · ${kind} → Text${delNote}`,
-          text: extracted,
-          mime: String(up.mime || mime || '' || (isPdf ? 'application/pdf' : 'application/octet-stream')),
-          size: Number(up.size || 0),
-          url: up.url,
-          file_id: up.id,
-          pdf: !!isPdf,
-          truncated: false,
-          pdf_deleted: false
-        });
-      } else {
-        // Fallback: keep the file, but be explicit that it won't be sent to the model.
-        state.attachments.push({
-          id,
-          type: 'file',
-          name: up.name,
-          meta: `${human(up.size)} · ${kind} (text extraction failed)`,
-          url: up.url,
-          mime: up.mime,
-          size: up.size,
-          file_id: up.id,
-          not_sent: true,
-          error: err || (kind + ' text extraction failed')
-        });
-      }
+        name: up.name || name,
+        url: up.url,
+        mime: up.mime || mime || 'application/octet-stream',
+        size: Number(up.size || f.size || 0),
+        file_id: up.id
+      };
+      att.meta = documentTextMeta(att);
+      state.attachments.push(att);
       return;
     }
 
@@ -6264,9 +9578,13 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
   fileInput?.addEventListener('change', async ()=>{
     const files = Array.from(fileInput.files||[]);
     if (!files.length) return;
-    for (const f of files) await addFileAttachment(f);
+    try {
+      for (const f of files) await addFileAttachment(f);
+    } catch (err) {
+      alert(String(err?.message || err || 'File/RAG processing failed'));
+    }
     fileInput.value='';
-    renderAttachments(); syncSend();
+    renderAttachments(); renderWebTools(); syncSend();
   });
 
   // drag & drop
@@ -6280,8 +9598,16 @@ on('click', '.user-card [data-cmd]', async (e, btn)=>{
     e.preventDefault(); inputContainer.classList.remove('dragover');
     const files = Array.from(e.dataTransfer?.files||[]);
     if (files.length){
-      for (const f of files) await addFileAttachment(f);
-      renderAttachments(); syncSend();
+      // Composer drops are always chat attachments. Enabling Code Workspace makes
+      // workspace tools available to the agent; it must not silently reinterpret
+      // every user upload as a project import. The agent can explicitly import a
+      // relevant attachment later with workspace_import_attachment.
+      try {
+        for (const f of files) await addFileAttachment(f);
+      } catch (err) {
+        alert(String(err?.message || err || 'File/RAG processing failed'));
+      }
+      renderAttachments(); renderWebTools(); syncSend();
     }
   });
 
@@ -6354,11 +9680,17 @@ document.addEventListener('paste', (e)=>{
   handlePasteToAttachments(e);
 });
 
-  // Autoscroll
+  // Autoscroll. Throttle bookkeeping to one read per animation frame so rapid
+  // keyboard/touch scrolling cannot flood the main thread on very long chats.
+  let chatScrollRaf = 0;
   chatArea?.addEventListener('scroll', ()=>{
-    const near = (chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight) < 120;
-    state.autoscroll = near;
-  });
+    if (chatScrollRaf) return;
+    chatScrollRaf = requestAnimationFrame(()=>{
+      chatScrollRaf = 0;
+      const near = (chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight) < 120;
+      state.autoscroll = near;
+    });
+  }, {passive:true});
   function scrollBottom(force=false){
     if (!chatArea) return;
     if (force || state.autoscroll) chatArea.scrollTop = chatArea.scrollHeight;
@@ -6414,12 +9746,409 @@ document.addEventListener('paste', (e)=>{
     el.dataset.reasoningChars = String(totalRawLength);
   }
 
+  function normalizeAgentActivityEvent(raw){
+    if (!raw || typeof raw !== 'object') return null;
+    const id = String(raw.id || '').trim();
+    const title = String(raw.title || '').trim();
+    if (!id || !title) return null;
+    const allowedStatus = new Set(['running','done','error']);
+    const allowedKind = new Set(['tool','commentary','finding','decision','warning']);
+    const allowedDetailFormat = new Set(['text','code','json']);
+    const livePreview = raw.live_preview === true;
+    const detailRaw = String(raw.detail || '');
+    const generatedBytesRaw = Number(raw.generated_bytes);
+    const progressRaw = (raw.progress === null || raw.progress === undefined || raw.progress === '') ? NaN : Number(raw.progress);
+    return {
+      id,
+      title,
+      status: allowedStatus.has(String(raw.status||'')) ? String(raw.status) : 'done',
+      kind: allowedKind.has(String(raw.kind||'')) ? String(raw.kind) : 'commentary',
+      tool: String(raw.tool || ''),
+      detail: livePreview ? detailRaw : detailRaw.trim(),
+      detail_label: String(raw.detail_label || '').trim(),
+      detail_summary: String(raw.detail_summary || '').trim(),
+      detail_format: allowedDetailFormat.has(String(raw.detail_format||'')) ? String(raw.detail_format) : 'text',
+      live_preview: livePreview,
+      generated_bytes: Number.isFinite(generatedBytesRaw) ? Math.max(0, Math.round(generatedBytesRaw)) : 0,
+      preview_target: String(raw.preview_target || '').trim(),
+      preview_truncated: raw.preview_truncated === true,
+      cancel_action: String(raw.cancel_action || '').trim(),
+      cancel_server_id: String(raw.cancel_server_id || '').trim(),
+      cancel_job_id: String(raw.cancel_job_id || '').trim(),
+      artifact_id: String(raw.artifact_id || '').trim(),
+      artifact_url: String(raw.artifact_url || '').trim(),
+      progress: Number.isFinite(progressRaw) ? Math.max(0, Math.min(1, progressRaw)) : null,
+      progress_label: String(raw.progress_label || '').trim(),
+      ts: Number.isFinite(Number(raw.ts)) ? Number(raw.ts) : now()
+    };
+  }
+
+  function agentActivityTotal(message, storedCount=null){
+    const stored = storedCount == null
+      ? (Array.isArray(message?.activity) ? message.activity.length : 0)
+      : Math.max(0, Math.round(Number(storedCount) || 0));
+    const raw = Number(message?.activity_total);
+    return Number.isFinite(raw) ? Math.max(stored, Math.max(0, Math.round(raw))) : stored;
+  }
+
+  function agentActivitySeenIds(message){
+    if (!message || typeof message !== 'object') return null;
+    if (message.__agentActivitySeenIds instanceof Set) return message.__agentActivitySeenIds;
+    const seen = new Set();
+    for (const raw of (Array.isArray(message.activity) ? message.activity : [])) {
+      const id = String(raw?.id || '').trim();
+      if (id) seen.add(id);
+    }
+    try {
+      // Runtime-only bookkeeping. Do not inflate chat JSON/export data with every
+      // historical activity id just to keep an exact counter.
+      Object.defineProperty(message, '__agentActivitySeenIds', {
+        value: seen,
+        writable: true,
+        configurable: true,
+        enumerable: false
+      });
+    } catch(_) {
+      // A sealed legacy object can skip the cache; retained ids still prevent
+      // duplicate counting in the normal update path.
+    }
+    return seen;
+  }
+
+  function upsertAgentActivity(message, rawEvent){
+    const event = normalizeAgentActivityEvent(rawEvent);
+    if (!message || !event) return false;
+    if (!Array.isArray(message.activity)) message.activity = [];
+
+    const beforeCount = message.activity.length;
+    const seen = agentActivitySeenIds(message);
+    const idx = message.activity.findIndex(x=>String(x?.id||'') === event.id);
+    const alreadySeen = idx >= 0 || !!seen?.has(event.id);
+
+    if (idx >= 0) {
+      const previous = normalizeAgentActivityEvent(message.activity[idx]);
+      const sameRunningStage = !!previous
+        && previous.status === 'running'
+        && event.status === 'running'
+        && previous.kind === event.kind
+        && previous.tool === event.tool
+        && previous.title === event.title;
+
+      // ComfyUI can interleave `executing` / progress_state updates without a
+      // numeric value between sampler progress events. Those events describe the
+      // same running node and must not erase the most recent 8/25-style progress.
+      // A real node/title change still clears progress normally.
+      if (sameRunningStage && event.progress == null && previous.progress != null) {
+        event.progress = previous.progress;
+        if (!event.progress_label) event.progress_label = previous.progress_label;
+      }
+
+      message.activity[idx] = {...message.activity[idx], ...event};
+    } else {
+      message.activity.push(event);
+    }
+
+    if (!alreadySeen) {
+      message.activity_total = agentActivityTotal(message, beforeCount) + 1;
+      seen?.add(event.id);
+    } else if (message.activity_total != null) {
+      // Keep malformed/old values from ever dropping below the retained history.
+      message.activity_total = agentActivityTotal(message);
+    }
+
+    if (message.activity.length > 100) message.activity = message.activity.slice(-100);
+    return true;
+  }
+
+  // A stream can end without its final SSE frame reaching the browser (proxy close,
+  // network interruption, malformed final chunk). Never leave animated activity
+  // rows in a permanent `running` state after the client has stopped streaming.
+  function settleAgentActivity(message, status='done'){
+    if (!message || !Array.isArray(message.activity)) return false;
+    const terminalStatus = status === 'error' ? 'error' : 'done';
+    let changed = false;
+    message.activity = message.activity.map(raw=>{
+      const event = normalizeAgentActivityEvent(raw);
+      if (!event || event.status !== 'running') return raw;
+      changed = true;
+      return {...raw, status:terminalStatus, live_preview:false, ts:now()};
+    });
+    return changed;
+  }
+
+  function clearAgentArtifactLinks(message){
+    if (!message) return false;
+    let changed = false;
+    if (Array.isArray(message.activity)) {
+      message.activity = message.activity.map(raw=>{
+        if (!raw || (!raw.artifact_url && !raw.artifact_id)) return raw;
+        changed = true;
+        return {...raw, artifact_url:'', artifact_id:''};
+      });
+    }
+    if (message.metrics && Number(message.metrics.mcp_artifact_count || 0) !== 0) {
+      message.metrics.mcp_artifact_count = 0;
+      changed = true;
+    }
+    return changed;
+  }
+
+  function syncChatStreamingClass(){
+    if (!chatMsgs) return;
+    const chatId = String(state.currentChat?.id || '');
+    chatMsgs.classList.toggle('is-streaming', !!chatId && state.streams.has(chatId));
+  }
+
+  function agentActivityRowHtml(rawEvent){
+    const event = normalizeAgentActivityEvent(rawEvent);
+    if (!event) return '';
+    const status = event.status;
+    const kind = event.kind;
+    const icon = status === 'done' ? '✓' : (status === 'error' ? '!' : (kind === 'commentary' ? '→' : '•'));
+    const tool = event.tool ? `<span class="agent-activity-tool">${esc(event.tool)}</span>` : '';
+    let detail = '';
+
+    if (event.live_preview && status === 'running') {
+      const formatClass = ['code','json'].includes(event.detail_format) ? ` agent-activity-live-${event.detail_format}` : ' agent-activity-live-text';
+      const target = event.preview_target ? `<span class="agent-activity-live-target">${esc(event.preview_target)}</span>` : '<span class="agent-activity-live-target">Output</span>';
+      const size = `<span class="agent-activity-live-size">${esc(human(event.generated_bytes) || `${event.generated_bytes} B`)} generated</span>`;
+      const tail = event.preview_truncated ? '<span class="agent-activity-live-tail-label">latest tail</span>' : '';
+      const body = `${event.preview_truncated ? '<span class="agent-activity-live-ellipsis">…</span>' : ''}${esc(event.detail)}<span class="agent-activity-live-cursor" aria-hidden="true">▋</span>`;
+      detail = `<div class="agent-activity-live-preview${formatClass}">
+        <div class="agent-activity-live-meta">${target}<span class="agent-activity-live-sep">·</span>${size}${tail}</div>
+        <div class="agent-activity-live-body">${body}</div>
+      </div>`;
+    } else if (event.detail) {
+      const label = event.detail_label ? `<span class="agent-activity-detail-label">${esc(event.detail_label)}</span>` : '';
+      const detailFormat = ['code','json'].includes(event.detail_format) ? event.detail_format : 'text';
+      const formatClass = ` agent-activity-detail-${detailFormat}`;
+      if (event.detail.length > 220 || event.detail.includes('\n')) {
+        const firstLine = event.detail.split('\n', 1)[0];
+        const previewSource = event.detail_summary || firstLine || event.detail;
+        const preview = previewSource.length > 217 ? `${previewSource.slice(0, 217).trimEnd()}…` : previewSource;
+        detail = `<details class="agent-activity-detail agent-activity-detail-expandable${formatClass}">
+          <summary>${label}<span class="agent-activity-detail-text">${esc(preview)}</span></summary>
+          <div class="agent-activity-detail-full">${esc(event.detail)}</div>
+        </details>`;
+      } else {
+        detail = `<div class="agent-activity-detail${formatClass}">${label}<span class="agent-activity-detail-text">${esc(event.detail)}</span></div>`;
+      }
+    }
+
+    const canCancel = status === 'running'
+      && ['mcp_cancel','comfyui_cancel'].includes(event.cancel_action)
+      && event.cancel_job_id
+      && (event.cancel_action !== 'mcp_cancel' || event.cancel_server_id);
+    const cancelTitle = event.cancel_action === 'comfyui_cancel'
+      ? 'Stop this ComfyUI job; keep the agent running'
+      : 'Stop only this process; keep the agent running';
+    const cancelButton = canCancel
+      ? `<button type="button" class="agent-activity-cancel" data-cancel-action="${esc(event.cancel_action)}" data-server-id="${esc(event.cancel_server_id)}" data-job-id="${esc(event.cancel_job_id)}" title="${esc(cancelTitle)}">Stop</button>`
+      : '';
+    const artifactButton = event.artifact_url
+      ? `<a class="agent-activity-artifact" href="${esc(event.artifact_url)}" target="_blank" rel="noopener">Open full output</a>`
+      : '';
+    const progressValue = (event.progress === null || event.progress === undefined || event.progress === '') ? NaN : Number(event.progress);
+    const progressPct = Number.isFinite(progressValue) ? Math.max(0, Math.min(100, Math.round(progressValue * 100))) : null;
+    const progressLabel = event.progress_label || (progressPct != null ? `${progressPct}%` : '');
+    const progress = progressPct == null ? '' : `<div class="agent-activity-progress-wrap">
+      <div class="agent-activity-progress" aria-label="${esc(progressLabel)}"><span style="width:${progressPct}%"></span></div>
+      <span class="agent-activity-progress-label">${esc(progressLabel)}</span>
+    </div>`;
+    return `<div class="agent-activity-item ${esc(status)} ${esc(kind)}${event.live_preview ? ' live-preview' : ''}" data-activity-id="${esc(event.id)}">
+      <span class="agent-activity-icon" aria-hidden="true">${icon}</span>
+      <div class="agent-activity-main">
+        <span class="agent-activity-title">${esc(event.title)}</span>
+        ${detail}
+        ${progress}
+      </div>
+      <div class="agent-activity-side">${tool}${artifactButton}${cancelButton}</div>
+    </div>`;
+  }
+
+  function agentActivityHtml(message){
+    const allEvents = Array.isArray(message?.activity)
+      ? message.activity.map(normalizeAgentActivityEvent).filter(Boolean)
+      : [];
+    const events = allEvents.slice(-60);
+    if (!events.length) return '';
+    const rows = events.map(agentActivityRowHtml).join('');
+    const total = agentActivityTotal(message, allEvents.length);
+    const countLabel = total > events.length ? `${events.length}/${total}` : `${events.length}`;
+    const collapsed = message?.activity_collapsed === true;
+    return `<div class="agent-activity-section${collapsed ? ' collapsed' : ''}">
+      <button type="button" class="agent-activity-header" aria-expanded="${collapsed ? 'false' : 'true'}">
+        <span class="agent-activity-heading">Agent activity</span>
+        <span class="agent-activity-header-meta">
+          <span class="agent-activity-count">${countLabel}</span>
+          <span class="agent-activity-chevron" aria-hidden="true">${collapsed ? '▼' : '▲'}</span>
+        </span>
+      </button>
+      <div class="agent-activity-list">${rows}</div>
+    </div>`;
+  }
+
+  function scrollAgentLivePreviewToTail(root){
+    if (!root) return;
+    for (const body of root.querySelectorAll('.agent-activity-live-body')) {
+      body.scrollTop = body.scrollHeight;
+    }
+  }
+
+  // The activity list is its own scroll container. Replacing the section DOM used
+  // to reset that container to scrollTop=0 whenever a new tool/action arrived.
+  // Keep following the newest row while the user is already near the bottom, but
+  // preserve their exact position when they intentionally scroll up to inspect
+  // older activity.
+  function captureAgentActivityScroll(section){
+    const list = section?.querySelector('.agent-activity-list');
+    if (!list) return null;
+    const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+    return {
+      top: list.scrollTop,
+      stickBottom: distanceFromBottom < 32
+    };
+  }
+
+  function restoreAgentActivityScroll(section, snapshot, defaultToBottom=false){
+    const list = section?.querySelector('.agent-activity-list');
+    if (!list) return;
+    if (!snapshot) {
+      if (defaultToBottom) list.scrollTop = list.scrollHeight;
+      return;
+    }
+    list.scrollTop = snapshot.stickBottom ? list.scrollHeight : snapshot.top;
+  }
+
+  function patchAgentActivityRunningDom(row, rawEvent){
+    const event = normalizeAgentActivityEvent(rawEvent);
+    if (!row || !event || event.live_preview) return false;
+
+    // Keep a running row mounted while ComfyUI reports updates for the same node.
+    // This prevents CSS/layout flicker and, importantly, keeps an existing
+    // progress bar visible when ComfyUI interleaves a non-numeric `executing`
+    // update between numeric sampler progress events.
+    const title = row.querySelector('.agent-activity-title');
+    if (!title || title.textContent !== event.title) return false;
+    if (!row.classList.contains(event.status) || !row.classList.contains(event.kind)) return false;
+    if (event.status !== 'running') return false;
+
+    const main = row.querySelector('.agent-activity-main');
+    if (!main) return false;
+
+    const progressValue = (event.progress === null || event.progress === undefined || event.progress === '') ? NaN : Number(event.progress);
+    if (Number.isFinite(progressValue)) {
+      const progressPct = Math.max(0, Math.min(100, Math.round(progressValue * 100)));
+      const progressLabel = event.progress_label || `${progressPct}%`;
+      let wrap = main.querySelector('.agent-activity-progress-wrap');
+      if (!wrap) {
+        main.insertAdjacentHTML('beforeend', `<div class="agent-activity-progress-wrap">
+          <div class="agent-activity-progress"><span></span></div>
+          <span class="agent-activity-progress-label"></span>
+        </div>`);
+        wrap = main.querySelector('.agent-activity-progress-wrap');
+      }
+      const bar = wrap?.querySelector('.agent-activity-progress');
+      const fill = bar?.querySelector('span');
+      const label = wrap?.querySelector('.agent-activity-progress-label');
+      if (!bar || !fill || !label) return false;
+      bar.setAttribute('aria-label', progressLabel);
+      fill.style.width = `${progressPct}%`;
+      label.textContent = progressLabel;
+    }
+
+    // No numeric progress on this event is intentional: leave any existing bar
+    // untouched. A different node/title falls through to the normal full render.
+    return true;
+  }
+
+  function renderAgentActivityDom(msgEl, message, rawEvent=null){
+    if (!msgEl) return;
+    const wrapper = msgEl.querySelector('.message-wrapper');
+    if (!wrapper) return;
+    const current = wrapper.querySelector('.agent-activity-section');
+
+    // The hot path updates the current row in place. New activity rows are also
+    // appended in place so an active agent run does not recreate the scroll box.
+    if (current && rawEvent) {
+      const event = normalizeAgentActivityEvent(rawEvent);
+      if (event) {
+        const scrollSnapshot = captureAgentActivityScroll(current);
+        let row = null;
+        for (const candidate of current.querySelectorAll('.agent-activity-item')) {
+          if (candidate.dataset.activityId === event.id) { row = candidate; break; }
+        }
+        if (row) {
+          if (patchAgentActivityRunningDom(row, event)) {
+            restoreAgentActivityScroll(current, scrollSnapshot);
+            return;
+          }
+
+          row.outerHTML = agentActivityRowHtml(event);
+          let replacement = null;
+          for (const candidate of current.querySelectorAll('.agent-activity-item')) {
+            if (candidate.dataset.activityId === event.id) { replacement = candidate; break; }
+          }
+          scrollAgentLivePreviewToTail(replacement);
+          restoreAgentActivityScroll(current, scrollSnapshot);
+          return;
+        }
+
+        const list = current.querySelector('.agent-activity-list');
+        if (list) {
+          list.insertAdjacentHTML('beforeend', agentActivityRowHtml(event));
+          while (list.children.length > 60) list.firstElementChild?.remove();
+
+          const allEvents = Array.isArray(message?.activity)
+            ? message.activity.map(normalizeAgentActivityEvent).filter(Boolean)
+            : [];
+          const shown = Math.min(60, allEvents.length);
+          const total = agentActivityTotal(message, allEvents.length);
+          const count = current.querySelector('.agent-activity-count');
+          if (count) count.textContent = total > shown ? `${shown}/${total}` : `${shown}`;
+
+          const appended = list.lastElementChild;
+          scrollAgentLivePreviewToTail(appended);
+          restoreAgentActivityScroll(current, scrollSnapshot, true);
+          return;
+        }
+      }
+    }
+
+    const html = agentActivityHtml(message);
+    if (!html) {
+      current?.remove();
+      return;
+    }
+    if (current) {
+      const scrollSnapshot = captureAgentActivityScroll(current);
+      current.outerHTML = html;
+      const replacement = wrapper.querySelector('.agent-activity-section');
+      scrollAgentLivePreviewToTail(replacement);
+      restoreAgentActivityScroll(replacement, scrollSnapshot);
+      return;
+    }
+    const header = wrapper.querySelector('.message-header');
+    if (header) header.insertAdjacentHTML('afterend', html);
+    else wrapper.insertAdjacentHTML('afterbegin', html);
+    const inserted = wrapper.querySelector('.agent-activity-section');
+    scrollAgentLivePreviewToTail(inserted);
+    restoreAgentActivityScroll(inserted, null, true);
+  }
+
   // Textarea send
+  function ragDraftBlocked(){
+    if (!state.webtools?.rag) return false;
+    return (state.attachments || []).some(a=>a?.type === 'rag' && String(a.rag_state || (a.rag_document_id ? 'ready' : '')) !== 'ready');
+  }
+
   function syncSend(){
     const hasText = textarea.value.trim().length>0;
     const streaming = isCurrentChatStreaming();
-    const busySend = streaming || !!state.webFetchBusy;
+    const ragBlocked = ragDraftBlocked();
+    const busySend = streaming || !!state.webFetchBusy || ragBlocked;
     sendBtn.disabled = busySend || (!hasText && state.attachments.length===0);
+    if (sendBtn) sendBtn.title = ragBlocked ? 'Wait until the RAG document is indexed, remove it, or switch RAG off' : 'Send';
     if (stopBtn) stopBtn.disabled = !streaming;
     // Voice button
     if (voiceBtn){
@@ -6439,14 +10168,6 @@ document.addEventListener('paste', (e)=>{
   });
   sendBtn?.addEventListener('click', ()=>send());
   stopBtn?.addEventListener('click', ()=>stopCurrentStream());
-
-  stopBtn?.addEventListener('click', ()=>{
-    const chatId = state.currentChat?.id;
-    if (!chatId) return;
-    const s = state.streams.get(String(chatId));
-    if (!s) return;
-    try{ s.controller?.abort(); }catch(_){/* noop */}
-  });
 
   // ---------- Sidebar rendering ----------
   // Helpers for <details> folders
@@ -6474,7 +10195,12 @@ document.addEventListener('paste', (e)=>{
       if(!foldersByParent.has(p)) foldersByParent.set(p, []);
       foldersByParent.get(p).push(f);
     });
-    foldersByParent.forEach(arr=>arr.sort((a,b)=>(a.name||'').localeCompare(b.name||'')));
+    foldersByParent.forEach(arr=>arr.sort((a,b)=>{
+      const aa = Number(a?.is_archive || 0) === 1 ? 1 : 0;
+      const bb = Number(b?.is_archive || 0) === 1 ? 1 : 0;
+      if (aa !== bb) return bb - aa;
+      return String(a?.name || '').localeCompare(String(b?.name || ''), undefined, {sensitivity:'base'});
+    }));
 
     const chatsByFolder = new Map();
     state.chats.forEach(c=>{
@@ -6486,6 +10212,42 @@ document.addEventListener('paste', (e)=>{
     return {foldersByParent, chatsByFolder};
   }
 
+  let archiveTreeCacheSource = null;
+  let archiveTreeCache = new Set();
+  function archivedFolderIds(){
+    if (archiveTreeCacheSource === state.folders) return archiveTreeCache;
+    archiveTreeCacheSource = state.folders;
+    archiveTreeCache = new Set();
+
+    const folders = state.folders || [];
+    const archive = folders.find(f=>Number(f?.is_archive || 0) === 1);
+    if (!archive?.id) return archiveTreeCache;
+
+    const children = new Map();
+    folders.forEach(f=>{
+      const p = String(f?.parent_id || '');
+      if (!children.has(p)) children.set(p, []);
+      children.get(p).push(String(f?.id || ''));
+    });
+    const stack = [String(archive.id)];
+    while (stack.length){
+      const id = stack.pop();
+      if (!id || archiveTreeCache.has(id)) continue;
+      archiveTreeCache.add(id);
+      (children.get(id) || []).forEach(cid=>stack.push(cid));
+    }
+    return archiveTreeCache;
+  }
+
+  function folderIsInsideArchive(folderId){
+    const id = String(folderId || '').trim();
+    return !!id && archivedFolderIds().has(id);
+  }
+
+  function chatIsArchived(c){
+    return !!c && folderIsInsideArchive(c.folder_id);
+  }
+
   function attachedParentId(c){
     const pid = String(c?.clone_parent_id || '').trim();
     const attached = String(c?.clone_attached || '') === '1' || c?.clone_attached === 1 || c?.clone_attached === true;
@@ -6495,6 +10257,7 @@ document.addEventListener('paste', (e)=>{
   function chatEl(c){
     const div = document.createElement('div');
     const streaming = isChatStreaming(c.id);
+    const archived = chatIsArchived(c);
     const sid = String(c.id);
     const isSel = !!(state.sidebarSelection && state.sidebarSelection.ids && state.sidebarSelection.ids.has(sid));
     div.className = 'chat-item' + (isSel?' selected':'') + (state.currentChat?.id===c.id?' active':'') + (streaming?' streaming':'');
@@ -6526,6 +10289,7 @@ document.addEventListener('paste', (e)=>{
           <button class="chat-dropdown-item has-submenu" type="button" data-submenu="export">Export</button>
         </div>
         <button class="chat-dropdown-item" data-cmd="move">Move to…</button>
+        ${archived ? '' : '<button class="chat-dropdown-item" data-cmd="archive">Move to archive</button>'}
         ${detachMenu}
         <div class="dropdown-sep"></div>
         <button class="chat-dropdown-item" data-cmd="delete">Delete</button>
@@ -6595,30 +10359,44 @@ document.addEventListener('paste', (e)=>{
 
   function folderEl(f, maps){
     const details = document.createElement('details');
-    details.className='folder';
+    const isArchive = Number(f?.is_archive || 0) === 1;
+    const insideArchive = folderIsInsideArchive(f?.id);
+    details.className='folder' + (isArchive ? ' archive-folder' : '');
     details.dataset.folderId=f.id;
+    details.dataset.archive = isArchive ? '1' : '0';
     details.open = (localStorage.getItem('folder_open_'+f.id) ?? 'true') === 'true';
 
     const subfolders = maps.foldersByParent.get(f.id) || [];
     const chats = maps.chatsByFolder.get(f.id) || [];
 
+    const folderIcon = isArchive
+      ? `<span class="folder-icon archive-folder-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16v13H4zM3 4h18v4H3zM9 11h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`
+      : `<span class="folder-icon">📁</span>`;
+    const folderMenu = isArchive
+      ? `
+          <button class="folder-dropdown-item" data-cmd="export">Export…</button>
+          <button class="folder-dropdown-item" data-cmd="collapse-all">Collapse All</button>`
+      : `
+          <button class="folder-dropdown-item" data-cmd="rename">Rename</button>
+          <button class="folder-dropdown-item" data-cmd="new-subfolder">New Subfolder</button>
+          <button class="folder-dropdown-item" data-cmd="move">Move to…</button>
+          ${insideArchive ? '' : '<button class="folder-dropdown-item" data-cmd="archive">Move to archive</button>'}
+          <button class="folder-dropdown-item" data-cmd="export">Export…</button>
+          <button class="folder-dropdown-item" data-cmd="collapse-all">Collapse All</button>
+          <div class="dropdown-sep"></div>
+          <button class="folder-dropdown-item" data-cmd="delete">Delete</button>`;
+
     details.innerHTML = `
-      <summary class="folder-header" draggable="true">
+      <summary class="folder-header" draggable="${isArchive ? 'false' : 'true'}">
         <div class="folder-title">
           <span class="folder-chevron">${details.open?'▾':'▸'}</span>
-          <span class="folder-icon">📁</span>
+          ${folderIcon}
           <span class="folder-name">${esc(f.name||'Folder')}</span>
           <span class="folder-count">(${chats.length})</span>
         </div>
         <button class="folder-menu-btn" data-action="folder-dropdown" aria-haspopup="true" aria-expanded="false">…</button>
         <div class="folder-dropdown">
-          <button class="folder-dropdown-item" data-cmd="rename">Rename</button>
-          <button class="folder-dropdown-item" data-cmd="new-subfolder">New Subfolder</button>
-          <button class="folder-dropdown-item" data-cmd="move">Move to…</button>
-          <button class="folder-dropdown-item" data-cmd="export">Export…</button>
-          <button class="folder-dropdown-item" data-cmd="collapse-all">Collapse All</button>
-          <div class="dropdown-sep"></div>
-          <button class="folder-dropdown-item" data-cmd="delete">Delete</button>
+          ${folderMenu}
         </div>
       </summary>
       <div class="folder-children"></div>
@@ -6724,7 +10502,11 @@ document.addEventListener('paste', (e)=>{
 
   async function reloadSidebar(){
     const b = await api('bootstrap');
-    if (b && b.logged_in===false){ if (typeof window.llcShowLogin==='function') window.llcShowLogin('Please sign in'); return; }
+    if (b && b.logged_in===false){
+      if (typeof window.llcSetAuthState==='function') window.llcSetAuthState(b.auth || {});
+      if (typeof window.llcShowLogin==='function') window.llcShowLogin(b?.auth?.initial_admin_setup_required ? '' : 'Please sign in');
+      return;
+    }
     state.folders = b.folders||[];
     state.chats = b.chats||[];
     // Keep the open chat's folder_id in sync with the sidebar snapshot.
@@ -7404,6 +11186,17 @@ document.addEventListener('paste', (e)=>{
         alert('Move failed: ' + (err?.message || err));
       }
     }
+    if (cmd==='archive'){
+      try {
+        const r = await api('chat_archive', {id});
+        const archiveId = String(r?.archive_id || '').trim();
+        if (archiveId) patchChatFolder(id, archiveId);
+        await reloadSidebar();
+      } catch (err) {
+        console.error('Archive chat failed', err);
+        alert('Archive failed: ' + (err?.message || err));
+      }
+    }
     if (cmd==='detach'){
       await api('chat_detach', {id});
       if (state.currentChat?.id === id && state.currentChat.meta && typeof state.currentChat.meta === 'object') {
@@ -7466,6 +11259,16 @@ document.addEventListener('paste', (e)=>{
         console.error('Move folder failed', err);
         alert('Move failed: ' + (err?.message || err));
       }
+    }
+    if(cmd==='archive'){
+      try {
+        await api('folder_archive', {id:folderId});
+        await reloadSidebar();
+      } catch (err) {
+        console.error('Archive folder failed', err);
+        alert('Archive failed: ' + (err?.message || err));
+      }
+      return;
     }
     if(cmd==='export'){
       // Collect this folder + all descendant folder ids.
@@ -7630,6 +11433,10 @@ document.addEventListener('paste', (e)=>{
     try{
       if (header.querySelector('.folder-menu-btn') && e.target && e.target.closest('.folder-menu-btn')) return;
       const folder = header.closest('.folder');
+      if (folder?.dataset?.archive === '1') {
+        e.preventDefault();
+        return;
+      }
       const id = folder?.dataset?.folderId || '';
       if (!id || !e.dataTransfer) return;
       sidebarDraggingFolder = true;
@@ -8998,7 +12805,18 @@ function md(md){
       }
 
       let j = start + 1;
+      let crossedLine = false;
       while (j < s.length) {
+        // Inline $...$ must stay on one physical line. Without this guard an
+        // ordinary currency amount such as "$0.84" can accidentally pair with
+        // a later dollar sign (for example "0.84$") several paragraphs away,
+        // causing the whole intervening prose to be parsed as TeX/MathML.
+        // Multiline math is still supported via $$...$$ and \[...\].
+        if (s[j] === '\n' || s[j] === '\r') {
+          crossedLine = true;
+          break;
+        }
+
         if (s[j] === '$' && !isEscapedAt(s, j)) {
           // Skip $$ (block markers) when looking for an inline close.
           if (s[j+1] === '$') { j += 2; continue; }
@@ -9009,13 +12827,13 @@ function md(md){
         j++;
       }
 
-      if (j >= s.length) {
+      if (crossedLine || j >= s.length) {
         out += '$';
         i = start + 1;
         continue;
       }
 
-        const closeNext = s[j+1] || '';
+      const closeNext = s[j+1] || '';
       if (!closeOK(closeNext)) {
         out += '$';
         i = start + 1;
@@ -9057,6 +12875,19 @@ function md(md){
   tmp = extractDollarMath(tmp);
 // ---- 3) Escape everything else ----
   tmp = esc(tmp).replace(/@@LITDOLLAR@@/g, ()=>'$');
+
+  // CommonMark does not treat underscores inside words as emphasis delimiters.
+  // Protect runs such as the underscores in `lazarus_whisper_input.mp3` before
+  // applying the deliberately small emphasis regexes below, then restore them.
+  // Without this, `_whisper_` is interpreted as italic and its underscores
+  // disappear from filenames, identifiers and similar text.
+  const intrawordUnderscores = [];
+  tmp = tmp.replace(/([A-Za-z0-9])(_+)(?=[A-Za-z0-9])/g, (_m, left, underscores)=>{
+    const i = intrawordUnderscores.length;
+    intrawordUnderscores.push(underscores);
+    return `${left}@@IWUS${i}@@`;
+  });
+
   // ---- 4) Inline markdown (safe because we've escaped already) ----
   tmp = tmp
     // bold+italic (common forms)
@@ -9074,6 +12905,9 @@ function md(md){
     .replace(/~~([^\n~]+)~~/g, '<del>$1</del>')
     // links
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  // Restore literal intraword underscores after emphasis parsing.
+  tmp = tmp.replace(/@@IWUS(\d+)@@/g, (_m, n)=> intrawordUnderscores[Number(n)] ?? '');
 
   // ---- 4b) Restore inline code spans ----
   tmp = tmp.replace(/@@IC_?(\d+)@@/g, (_m, n)=>{
@@ -9474,6 +13308,7 @@ function md(md){
   }
 
   function renderMessages(){
+    syncChatStreamingClass();
     chatMsgs.innerHTML='';
     if(!state.currentChat){ chatMsgs.appendChild(emptyChatMsg); updateTokenBarIdle(); return; }
     const msgs = state.currentChat.messages || [];
@@ -9490,6 +13325,50 @@ function md(md){
     updateTokenBarIdle();
     updateTtsButtons();
     scheduleFitMermaid(chatMsgs);
+  }
+
+  function ragSourcesHtml(m){
+    const sources = Array.isArray(m?.rag_sources) ? m.rag_sources : [];
+    if (!sources.length) return '';
+
+    const cited = new Set();
+    const content = String(m?.content || '');
+    for (const match of content.matchAll(/\[(\d+)\]/g)) cited.add(Number(match[1]));
+
+    const cards = sources.map((src, i)=>{
+      const n = Number(src?.n || (i + 1));
+      const name = String(src?.name || src?.source || src?.document_id || 'Document');
+      const section = String(src?.section || '').trim();
+      const page = Number(src?.page);
+      const score = Number(src?.score);
+      const text = String(src?.text || '').trim();
+      const isCited = cited.has(n);
+      let url = String(src?.source || '').trim();
+      if (url && Number.isFinite(page) && page > 0 && /^https?:\/\//i.test(url)) {
+        url = url.replace(/#.*$/, '') + `#page=${Math.round(page)}`;
+      }
+      const loc = [];
+      if (Number.isFinite(page) && page > 0) loc.push(`p. ${Math.round(page)}`);
+      if (section) loc.push(section);
+      if (Number.isFinite(score)) loc.push(Number(score).toFixed(3));
+      const title = url && /^https?:\/\//i.test(url)
+        ? `<a class="rag-source-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a>`
+        : `<span>${esc(name)}</span>`;
+      return `<div class="rag-source-card${isCited ? ' cited' : ''}">
+        <div class="rag-source-head">
+          <span class="rag-source-num">[${n}]</span>
+          <span class="rag-source-name">${title}</span>
+          ${isCited ? '<span class="rag-source-cited">cited</span>' : ''}
+        </div>
+        ${loc.length ? `<div class="rag-source-meta">${loc.map(esc).join(' · ')}</div>` : ''}
+        <div class="rag-source-passage">${esc(text)}</div>
+      </div>`;
+    }).join('');
+
+    return `<details class="rag-sources-block">
+      <summary><span>RAG sources</span><span class="rag-sources-count">${sources.length}${cited.size ? ` · ${cited.size} cited` : ''}</span></summary>
+      <div class="rag-sources-list">${cards}</div>
+    </details>`;
   }
 
   function messageNode(m, idx){
@@ -9550,35 +13429,50 @@ function md(md){
         </div>`;
       }
 
-      if(a.type==='text' && a.text){
+      if(isTextDocumentAttachment(a) && (a.text || a.file_id)){
         const txt = String(a.text||'');
         const head = txt.slice(0, 800);
         const more = txt.length > head.length;
         const badge = a.truncated ? ' · truncated' : '';
+        const fileBacked = !txt && !!a.file_id;
+        const info = fileBacked ? ` <span class="muted">· ${esc(documentTextMeta(a))}</span>` : '';
 
         const actions = `
           <div class="att-actions">
             ${a.url ? `<a class="icon-btn sm" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer" title="Download" aria-label="Download">${iconSvg('download')}</a>` : ''}
-            <button class="icon-btn sm att-view" data-msg-index="${idx}" data-att-index="${ai}" title="View full" aria-label="View">${iconSvg('eye')}</button>
+            <button class="icon-btn sm att-view" data-msg-index="${idx}" data-att-index="${ai}" title="View full extraction" aria-label="View">${iconSvg('eye')}</button>
             ${(a.file_id && a.url) ? `<button class="icon-btn sm danger att-delete" data-msg-index="${idx}" data-att-index="${ai}" title="Delete on server" aria-label="Delete">${iconSvg('trash')}</button>` : ''}
             ${rmBtn}
           </div>`;
 
         return `<div class="muted" style="margin-top:10px;">
           <div class="att-row">
-            <span class="att-label">${iconSvg('fileText')} <b>${esc(a.name||'text')}</b>${badge}</span>
+            <span class="att-label">${iconSvg('fileText')} <b>${esc(a.name||'text')}</b>${badge}${info}</span>
             ${actions}
           </div>
-          <pre class="att-preview">${esc(head)}${more ? '…' : ''}</pre>
+          ${txt ? `<pre class="att-preview">${esc(head)}${more ? '…' : ''}</pre>` : ''}
+        </div>`;
+      }
+
+      if(a.type==='rag' && a.rag_document_id){
+        const actions = `<div class="att-actions">${dlBtn}${rmBtn}</div>`;
+        const chunks = Number(a.rag_chunks || 0);
+        return `<div class="muted" style="margin-top:10px;">
+          <div class="att-row">
+            <span class="att-label">${iconSvg('fileText')} <b>${esc(a.name||'RAG document')}</b> <span class="muted">· RAG${chunks ? ` · ${chunks} chunks` : ''}</span></span>
+            ${actions}
+          </div>
         </div>`;
       }
 
       if((a.type==='file'||a.type==='image') && a.url){
         const ns = a.not_sent ? ' · not sent to model' : '';
         const actions = `<div class="att-actions">${dlBtn}${delBtn}${rmBtn}</div>`;
+        const fileSize = Number(a.size || 0);
+        const sizeInfo = fileSize > 0 ? ` · ${esc(human(fileSize))}` : '';
         return `<div class="muted" style="margin-top:10px;">
           <div class="att-row">
-            <span class="att-label">${iconSvg('paperclip')} <a href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">${esc(a.name||'file')}</a> <span class="muted">· ${esc(a.mime||'')} · ${esc(human(a.size||0))}${ns}</span></span>
+            <span class="att-label">${iconSvg('paperclip')} <a href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">${esc(a.name||'file')}</a> <span class="muted">· ${esc(a.mime||'')}${sizeInfo}${ns}</span></span>
             ${actions}
           </div>
         </div>`;
@@ -9596,6 +13490,7 @@ function md(md){
 
       return '';
     }).join('');
+    const activity = (!isUser) ? agentActivityHtml(m) : '';
     const hasReasoning = (!isUser && m.reasoning && String(m.reasoning).trim());
     const thinking = (hasReasoning) ? `
       <div class="thinking-section">
@@ -9606,13 +13501,16 @@ function md(md){
     const canResume = (!isUser && isLast && (m.stopped === true));
 
     const metricsInner = (!isUser) ? msgMetricsHtml(m.metrics || null) : '';
+    const ragSources = (!isUser) ? ragSourcesHtml(m) : '';
 
     wrap.innerHTML = `
       <div class="message-avatar">${avatar}</div>
       <div class="message-wrapper">
         <div class="message-header"><span>${esc(who)}</span><span>${fmt(m.created_at)}</span></div>
+        ${activity}
         ${thinking}
         <div class="message-content">${content}${atts}</div>
+        ${ragSources}
         <div class="message-actions">
           <button class="action-btn" data-action="edit" title="Edit">✏</button>
           <button class="action-btn" data-action="copy" title="Copy">⧉</button>
@@ -9627,6 +13525,79 @@ function md(md){
     if (hasReasoning) setThinkingText(wrap.querySelector('.thinking-content'), m.reasoning || '');
     return wrap;
   }
+
+  const scheduleAgentActivityStateSave = debounce(()=>{
+    if (!state.currentChat || state.loadingChat) return;
+    saveChat(state.currentChat).catch(()=>{});
+  }, 250);
+
+  on('click', '.agent-activity-header', (e, header)=>{
+    e.preventDefault();
+    const section = header.closest('.agent-activity-section');
+    if (!section) return;
+
+    const collapsed = !section.classList.contains('collapsed');
+    section.classList.toggle('collapsed', collapsed);
+    header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    const arrow = header.querySelector('.agent-activity-chevron');
+    if (arrow) arrow.textContent = collapsed ? '▼' : '▲';
+
+    // Keep the user's choice stable while streaming replaces the activity DOM,
+    // and persist it with the message so reopening the chat preserves the state.
+    const msgEl = section.closest('.message');
+    const idx = Number(msgEl?.dataset?.msgIndex);
+    const message = Number.isInteger(idx) ? state.currentChat?.messages?.[idx] : null;
+    if (message) {
+      message.activity_collapsed = collapsed;
+      scheduleAgentActivityStateSave();
+    }
+  });
+
+  on('click', '.agent-activity-cancel', async (e, btn)=>{
+    e.preventDefault();
+    e.stopPropagation();
+    const action = String(btn.dataset.cancelAction || '').trim();
+    const serverId = String(btn.dataset.serverId || '').trim();
+    const jobId = String(btn.dataset.jobId || '').trim();
+    if (!jobId || btn.disabled) return;
+    if (action === 'mcp_cancel' && !serverId) return;
+    if (!['mcp_cancel','comfyui_cancel'].includes(action)) return;
+    btn.disabled = true;
+    const oldText = btn.textContent;
+    btn.textContent = 'Stopping…';
+    try {
+      // Out-of-band job cancellation only. Keep the chat stream alive so the
+      // tool call can observe the cancellation and the agent can recover/explain.
+      if (action === 'comfyui_cancel') {
+        const result = await api('comfyui_cancel', {chat_id:String(state.currentChat?.id || ''), job_id:jobId});
+        btn.textContent = result?.cancelled === false ? 'Already stopped' : 'Stopping…';
+      } else {
+        const result = await api('mcp_cancel', {chat_id:String(state.currentChat?.id || ''), server_id:serverId, job_id:jobId});
+        const cancelResult = result?.result || {};
+        const found = cancelResult.found;
+        const requested = cancelResult.cancellation_requested;
+        const attempted = cancelResult.termination_attempted;
+        const succeeded = cancelResult.termination_succeeded;
+
+        if (found === false) {
+          btn.textContent = 'Not running';
+        } else if (requested !== true) {
+          btn.disabled = false;
+          btn.textContent = 'Stop rejected';
+        } else if (attempted === true && succeeded === false) {
+          btn.disabled = false;
+          btn.textContent = 'Stop failed';
+          btn.title = 'The MCP server found the job but could not terminate its process tree';
+        } else {
+          btn.textContent = attempted === true ? 'Stopping…' : 'Stop queued';
+        }
+      }
+    } catch (ex) {
+      btn.disabled = false;
+      btn.textContent = oldText;
+      console.error(`${action || 'Job'} cancellation request failed`, ex);
+    }
+  });
 
   on('click', '.thinking-header', (e, header)=>{
     const content = header.nextElementSibling;
@@ -9801,15 +13772,22 @@ on('click', '.message .action-btn', async (e, btn)=>{
   }
 
 
-  on('click', '.att-view', (e, btn)=>{
+  on('click', '.att-view', async (e, btn)=>{
     e.preventDefault(); e.stopPropagation();
     const mi = Number(btn.dataset.msgIndex);
     const ai = Number(btn.dataset.attIndex);
     const m = state.currentChat?.messages?.[mi];
     const a = m?.attachments?.[ai];
-    if (!a || !a.text) return;
+    if (!a || (!a.text && !a.file_id)) return;
     const title = a.name ? `Extraction · ${a.name}` : 'Extraction';
-    extractModal.open(title, a.text);
+    try {
+      if (!a.text && a.file_id) extractModal.open(title, 'Extracting text from stored document…');
+      const text = await attachmentTextForView(a);
+      extractModal.open(title, text);
+    } catch (err) {
+      extractModal.close();
+      alert(String(err?.message || err || 'Could not extract document text'));
+    }
   });
 
   on('click', '.att-delete', async (e, btn)=>{
@@ -9822,9 +13800,9 @@ on('click', '.message .action-btn', async (e, btn)=>{
     const ok = confirm('Really delete this file from the server?');
     if(!ok) return;
     try{
-      await api('file_delete', { id: a.file_id });
+      await deleteStoredFileWithForce(a.file_id);
     }catch(err){
-      alert(String(err?.message || err));
+      if (!err?.cancelled) alert(String(err?.message || err));
       return;
     }
     // Keep attachment but remove server link so UI reflects deletion
@@ -9857,6 +13835,7 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
 
     await saveChat();
     renderMessages();
+    renderWebTools();
   });
 
   function startEdit(idx){
@@ -9917,7 +13896,7 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
       }
     }
     state.currentChat.messages = msgs.slice(0, userIdx+1);
-    state.currentChat.messages.push({role:'assistant', content:'', reasoning:'', created_at: now(), model: state.ui.model, connection_id: state.ui.connectionId, incomplete:true, stopped:false});
+    state.currentChat.messages.push({role:'assistant', content:'', reasoning:'', activity:[], activity_total:0, activity_collapsed:false, created_at: now(), model: state.ui.model, connection_id: state.ui.connectionId, incomplete:true, stopped:false});
     renderMessages();
     await streamAssistantForChat(state.currentChat, { mode:'new', assistantIdx: state.currentChat.messages.length-1 });
   }
@@ -9988,31 +13967,41 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
       if (wt && typeof wt === 'object') {
         state.webtools.web = !!wt.web;
         state.webtools.search = !!(wt.search ?? wt.webSearch);
+        state.webtools.rag = !!wt.rag;
+        state.webtools.rag_mode = normalizeChatRagMode(wt.rag_mode ?? wt.ragMode ?? 'default');
         state.webtools.image = !!(wt.image ?? wt.img ?? wt.image_generation);
         state.webtools.document = !!(wt.document ?? wt.doc ?? wt.workspace);
         state.webtools.code_workspace = !!wt.code_workspace;
         state.webtools.workspace_id = String(wt.workspace_id || '');
         state.webtools.workspace_name = String(wt.workspace_name || '');
-        state.webtools.workspace_access = String(wt.workspace_access || 'read') === 'read' ? 'read' : 'write';
-        state.webtools.workspace_strategy = String(wt.workspace_strategy || 'efficient') === 'standard' ? 'standard' : 'efficient';
-        if (!state.webtools.workspace_id) state.webtools.code_workspace = false;
+        state.webtools.workspace_access = String(wt.workspace_access || 'write') === 'read' ? 'read' : 'write';
+        state.webtools.workspace_strategy = 'efficient';
+        state.webtools.workspace_offer_download = wt.workspace_offer_download !== false;
         state.webtools.custom_tools = Array.isArray(wt.custom_tools) ? wt.custom_tools : [];
+        state.webtools.mcp_servers = Array.isArray(wt.mcp_servers) ? wt.mcp_servers : [];
       } else {
         state.webtools.web = !!state.ui.webAutoEnable;
         state.webtools.search = !!state.ui.webSearchAutoEnable;
+        state.webtools.rag = !!state.ui.ragAvailable && !!state.ui.ragAutoEnable;
+        state.webtools.rag_mode = 'default';
         state.webtools.image = !!state.ui.imageAutoEnable;
         state.webtools.document = false;
         state.webtools.code_workspace = false;
         state.webtools.workspace_id = '';
         state.webtools.workspace_name = '';
-        state.webtools.workspace_access = 'read';
+        state.webtools.workspace_access = 'write';
         state.webtools.workspace_strategy = 'efficient';
+        state.webtools.workspace_offer_download = true;
         state.webtools.custom_tools = defaultCustomToolNames();
+        state.webtools.mcp_servers = defaultMcpServerIds();
       }
+      if (!state.ui.ragAvailable) state.webtools.rag = false;
       renderWebTools();
       renderDocumentUI();
 
       if (state.ui.model) modelBtn.firstChild.textContent = headerModelText() + ' ';
+      syncRouterEventStream();
+      syncCurrentModelContext();
     } finally {
       state.loadingChat = false;
     }
@@ -10083,11 +14072,51 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
     return out;
   }
 
+  function runningMcpCancelJobs(message){
+    const jobs = [];
+    const seen = new Set();
+    for (const raw of (Array.isArray(message?.activity) ? message.activity : [])) {
+      const event = normalizeAgentActivityEvent(raw);
+      if (!event || event.status !== 'running' || event.cancel_action !== 'mcp_cancel') continue;
+      if (!event.cancel_server_id || !event.cancel_job_id) continue;
+      const key = `${event.cancel_server_id}\0${event.cancel_job_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      jobs.push({chat_id:String(state.currentChat?.id || ''), server_id:event.cancel_server_id, job_id:event.cancel_job_id});
+    }
+    return jobs;
+  }
+
+  function runningComfyUiCancelJobs(message){
+    const jobs = [];
+    const seen = new Set();
+    for (const raw of (Array.isArray(message?.activity) ? message.activity : [])) {
+      const event = normalizeAgentActivityEvent(raw);
+      if (!event || event.status !== 'running' || event.cancel_action !== 'comfyui_cancel') continue;
+      if (!event.cancel_job_id || seen.has(event.cancel_job_id)) continue;
+      seen.add(event.cancel_job_id);
+      jobs.push({chat_id:String(state.currentChat?.id || ''), job_id:event.cancel_job_id});
+    }
+    return jobs;
+  }
+
   function stopCurrentStream(){
     const id = state.currentChat?.id;
     if (!id) return;
     const s = state.streams.get(String(id));
     if (!s) return;
+
+    const messages = Array.isArray(state.currentChat?.messages) ? state.currentChat.messages : [];
+    const activeMessage = [...messages].reverse().find(m=>m?.role === 'assistant' && (m?.incomplete === true || runningMcpCancelJobs(m).length || runningComfyUiCancelJobs(m).length));
+    for (const job of runningMcpCancelJobs(activeMessage)) {
+      // Separate requests are intentional: the chat stream may be blocked in a
+      // long tool call while cancellation reaches the backend on another worker.
+      api('mcp_cancel', job).catch(err=>console.error('MCP cancellation failed', err));
+    }
+    for (const job of runningComfyUiCancelJobs(activeMessage)) {
+      api('comfyui_cancel', job).catch(err=>console.error('ComfyUI cancellation failed', err));
+    }
+
     try{ s.controller?.abort(); }catch(_){/* noop */}
   }
 
@@ -10168,7 +14197,7 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
     let llmMessages;
     if (mode === 'resume') {
       llmMessages = buildLlmMessages(chat, { uptoIdx: assistantIdx, trimTrailingEmptyAssistant: false });
-      llmMessages.push({ role:'user', content: 'Continue exactly where you left off. Do not repeat. Do not restart the answer.' });
+      llmMessages.push({ role:'user', content: 'Continue exactly where you left off. Do not repeat. Do not restart the answer. If the interrupted work used an interactive terminal, first inspect existing terminal sessions and continue one if available; do not relaunch a long-running installation, VM, SSH session, or terminal command merely because the response stream was interrupted.' });
     } else {
       llmMessages = buildLlmMessages(chat, { trimTrailingEmptyAssistant: true });
     }
@@ -10189,7 +14218,7 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
     let newUserTok = 0;
     if (mode === 'resume') {
       // Synthetic user nudge appended only for resume.
-      newUserTok = estTok('Continue exactly where you left off. Do not repeat. Do not restart the answer.');
+      newUserTok = estTok('Continue exactly where you left off. Do not repeat. Do not restart the answer. If the interrupted work used an interactive terminal, first inspect existing terminal sessions and continue one if available; do not relaunch a long-running installation, VM, SSH session, or terminal command merely because the response stream was interrupted.');
     } else {
       const um = chat.messages?.[assistantIdx - 1];
       if (um && um.role === 'user') {
@@ -10213,10 +14242,86 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
     // We reset visible metrics for the active assistant message, but keep its run history.
     const baseCost = getChatBilledCost(chat);
 
-    // "Ever generated" tokens: completion tokens across all finalized runs (incl. Regenerate history).
-    // Prefer the chat-level accumulator when present; otherwise sum metrics.runs / completion_tokens.
-    const metaEver = Number(chat?.meta?.total_gen_tok);
-    const baseEverGen = Number.isFinite(metaEver) ? metaEver : (sumChatEverGen(chat, { excludeIdx: assistantIdx }).total || 0);
+    // A tool/agent request may contain many distinct upstream model turns. The
+    // backend reports real usage for each completed turn as agent_turn_stats.
+    // Keep those turn records separate from the final message metrics while the
+    // request is live so P/C/$ can advance at every tool boundary.
+    const agentTurnUsage = new Map();
+    // Current in-flight agent turn. Tool-call JSON is hidden from the normal
+    // content stream, so the backend sends a rough live completion estimate
+    // until real per-turn usage arrives.
+    let agentLiveTurn = -1;
+    let agentLiveCompletionTokens = 0;
+
+    const agentUsageSummary = ()=>{
+      if (!agentTurnUsage.size) return null;
+      const turns = [...agentTurnUsage.values()].sort((a,b)=>a.turn-b.turn);
+      const last = turns[turns.length - 1] || null;
+      let completionTokens = 0;
+      let totalTokens = 0;
+      let price = 0;
+      let allCompletionKnown = true;
+      let allTotalKnown = true;
+      let allPriceKnown = true;
+
+      for (const rec of turns) {
+        if (rec.ct == null) allCompletionKnown = false;
+        else completionTokens += rec.ct;
+
+        const turnTotal = rec.tt != null ? rec.tt : ((rec.pt != null && rec.ct != null) ? (rec.pt + rec.ct) : null);
+        if (turnTotal == null) allTotalKnown = false;
+        else totalTokens += turnTotal;
+
+        if (rec.price == null) allPriceKnown = false;
+        else price += rec.price;
+      }
+
+      return {
+        turns,
+        count: turns.length,
+        last,
+        completionTokens: allCompletionKnown ? completionTokens : null,
+        totalTokens: allTotalKnown ? totalTokens : null,
+        price: allPriceKnown ? price : null
+      };
+    };
+
+    const rememberAgentTurnStats = (obj)=>{
+      const rawTurn = Number(obj?.turn);
+      const turn = Number.isFinite(rawTurn) ? Math.max(0, Math.trunc(rawTurn)) : agentTurnUsage.size;
+      const numberOrNull = (v)=>{
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+      const pt = numberOrNull(obj?.prompt_tokens);
+      const ct = numberOrNull(obj?.completion_tokens);
+      const tt = numberOrNull(obj?.total_tokens);
+      const promptTps = numberOrNull(obj?.prompt_tps);
+      const genTps = numberOrNull(obj?.gen_tps);
+      const turnPrice = (pt != null && ct != null) ? calcPrice(pt, ct, connectionId, model) : null;
+      agentTurnUsage.set(turn, { turn, pt, ct, tt, promptTps, genTps, price: turnPrice });
+      if (agentLiveTurn === turn) {
+        agentLiveTurn = -1;
+        agentLiveCompletionTokens = 0;
+      }
+      return agentUsageSummary();
+    };
+
+    const applyAgentUsageToMetrics = (m, summary)=>{
+      if (!m || !summary?.last) return;
+      m.metrics = m.metrics || {};
+      const last = summary.last;
+      if (last.promptTps != null) m.metrics.prompt_tps = last.promptTps;
+      if (last.genTps != null) m.metrics.gen_tps = last.genTps;
+      // prompt_tokens remains the latest model turn because that is the useful
+      // context position. Completion/total usage spans every model turn in this
+      // one agent run, which is what C/accounting need.
+      if (last.pt != null) m.metrics.prompt_tokens = last.pt;
+      if (summary.completionTokens != null) m.metrics.completion_tokens = summary.completionTokens;
+      if (summary.totalTokens != null) m.metrics.total_tokens = summary.totalTokens;
+      if (summary.price != null) m.metrics.price = summary.price;
+      m.metrics.agent_turn_count = summary.count;
+    };
 
     const statsT0 = performance.now();
     let statsLast = 0;
@@ -10247,28 +14352,38 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
       statsLast = now;
 
       const cur = curUsage();
+      const agentUsage = agentUsageSummary();
+      const lastAgentTurn = agentUsage?.last || null;
 
-      const P = cur.pt + cur.ct;
-
-      const C = baseC + cur.ct;
-      const T = baseEverGen + cur.ct;
+      // For a normal response, P/C keep their existing live-estimate behavior.
+      // Once an agent turn has finalized, prefer its real upstream usage and the
+      // cumulative completion count across all completed turns in this run.
+      const liveAgentCt = Math.max(0, Number(agentLiveCompletionTokens) || 0);
+      const P = (lastAgentTurn?.pt != null && lastAgentTurn?.ct != null)
+        ? (lastAgentTurn.pt + lastAgentTurn.ct + liveAgentCt)
+        : (cur.pt + Math.max(cur.ct, liveAgentCt));
+      const completedAgentCt = agentUsage?.completionTokens != null ? agentUsage.completionTokens : null;
+      const C = baseC + (completedAgentCt != null ? (completedAgentCt + liveAgentCt) : Math.max(cur.ct, liveAgentCt));
 
       // Speed estimate: don't divide by the whole request time (which includes
       // initial network/model latency) or it will start low and creep upward.
       // Instead, start timing from the first produced tokens and use a short
-      // rolling EMA over Δtokens/Δt.
+      // rolling EMA over Δtokens/Δt. Agent turns can provide their own exact
+      // generation speed; after each completed turn, prefer that value.
       const streamRec = state.streams.get(chatId);
 
-      if (streamRec && streamRec._firstTokAt == null && cur.ct > 0.2) {
+      if (!agentUsage && streamRec && streamRec._firstTokAt == null && cur.ct > 0.2) {
         streamRec._firstTokAt = now;
         streamRec._lastSpeedAt = now;
         streamRec._lastSpeedCt = cur.ct;
       }
 
       let tpsRaw = 0;
-      if (cur.genTps != null) {
+      if (lastAgentTurn?.genTps != null) {
+        tpsRaw = lastAgentTurn.genTps;
+      } else if (cur.genTps != null) {
         tpsRaw = cur.genTps;
-      } else if (streamRec && streamRec._firstTokAt != null) {
+      } else if (!agentUsage && streamRec && streamRec._firstTokAt != null) {
         const baseAt = (streamRec._lastSpeedAt ?? streamRec._firstTokAt);
         const baseCt = (streamRec._lastSpeedCt ?? 0);
         const dt = (now - baseAt) / 1000;
@@ -10284,7 +14399,7 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
 
         const denom = Math.max(0.001, (now - streamRec._firstTokAt) / 1000);
         tpsRaw = streamRec._tpsEma ?? (cur.ct / denom);
-      } else {
+      } else if (!agentUsage) {
         const elapsed = (now - statsT0) / 1000;
         tpsRaw = (elapsed > 0.3) ? (cur.ct / elapsed) : 0;
       }
@@ -10293,14 +14408,19 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
 
       if (statusPromptTokEl) statusPromptTokEl.textContent = `P ${Math.round(P)}`;
       if (statusCompletionTokEl) statusCompletionTokEl.textContent = `C ${Math.round(C)}`;
-      if (statusTotalTokEl) statusTotalTokEl.textContent = `T ${Math.round(T)}`;
+      // CTX is model/runtime metadata, not per-turn usage. It is intentionally
+      // left untouched during a running request.
 
-      const curUsd = calcPrice(cur.pt, cur.ct, connectionId, model);
+      const curUsd = agentUsage?.price != null
+        ? agentUsage.price
+        : calcPrice(cur.pt, cur.ct, connectionId, model);
       const totalUsd = (baseCost.usd || 0) + (curUsd || 0);
       if (statusCostEl) {
         statusCostEl.textContent = (baseCost.any || (curUsd != null)) ? `~$${fmtUsd(totalUsd)}` : '';
       }
-      const elapsedShown = (streamRec && streamRec._firstTokAt != null) ? ((now - streamRec._firstTokAt) / 1000) : ((now - statsT0) / 1000);
+      const elapsedShown = (streamRec && streamRec._firstTokAt != null && !agentUsage)
+        ? ((now - streamRec._firstTokAt) / 1000)
+        : ((now - statsT0) / 1000);
       if (statusSpeedEl) statusSpeedEl.textContent = `${elapsedShown.toFixed(1)}s • ${tps} tok/s`;
     };
 
@@ -10314,12 +14434,17 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
       mode,
       baseUsage,
       baseCost,
+      // One request owns the complete temporary activity lifecycle: model load
+      // -> prompt processing -> first generated output.
+      runtimeActivityDismissed: false,
+      promptProgress: null,
       // Streaming speed helpers
       _firstTokAt: null,
       _lastSpeedAt: null,
       _lastSpeedCt: 0,
       _tpsEma: null
     });
+    syncChatStreamingClass();
     state.chatCache.set(chatId, chat);
     renderSidebar();
     if (state.currentChat?.id === chat.id) syncSend();
@@ -10336,24 +14461,45 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
       webtools: {
         web: !!(state.webtools && state.webtools.web),
         search: !!(state.webtools && state.webtools.search),
+        rag: !!(state.webtools && state.webtools.rag),
+        rag_mode: normalizeChatRagMode(state.webtools?.rag_mode),
         image: !!(state.webtools && state.webtools.image),
         document: !!(state.webtools && state.webtools.document),
         code_workspace: !!(state.webtools && state.webtools.code_workspace),
         workspace_id: String(state.webtools?.workspace_id || ''),
-        workspace_access: String(state.webtools?.workspace_access || 'read'),
-        workspace_strategy: String(state.webtools?.workspace_strategy || 'efficient'),
-        custom_tools: Array.isArray(state.webtools?.custom_tools) ? state.webtools.custom_tools : []
+        workspace_access: String(state.webtools?.workspace_access || 'write'),
+        workspace_strategy: 'efficient',
+        workspace_offer_download: state.webtools?.workspace_offer_download !== false,
+        custom_tools: Array.isArray(state.webtools?.custom_tools) ? state.webtools.custom_tools : [],
+        mcp_servers: Array.isArray(state.webtools?.mcp_servers) ? state.webtools.mcp_servers : []
+      },
+      rag: {
+        documents: ragDocumentIdsForChat(chat),
+        retrieval_mode: effectiveRagMode()
+      },
+      // Runtime truth for this exact request. The backend still persists defaults,
+      // but it no longer guesses the active mode from a possibly stale DB value.
+      mcp_context: {
+        mode: String(state.ui?.mcpContextMode || 'externalize') === 'externalize' ? 'externalize' : 'full',
+        externalize_above_tokens: mcpClamp(state.ui?.mcpExternalizeAboveTokens, 500, 200000, 6000),
+        preview_max_tokens: mcpClamp(state.ui?.mcpPreviewMaxTokens, 200, 50000, 2500),
+        full_first_pass_max_tokens: mcpClamp(state.ui?.mcpFullFirstPassMaxTokens, 0, 200000, 32000)
       },
       document: (state.webtools && state.webtools.document) ? documentStateForPayload(chat) : { mode: 'chat' },
       workspace: (state.webtools && state.webtools.code_workspace) ? {
         id: String(state.webtools.workspace_id || ''),
-        access: String(state.webtools.workspace_access || 'read'),
-        strategy: String(state.webtools.workspace_strategy || 'efficient')
+        access: String(state.webtools.workspace_access || 'write'),
+        strategy: 'efficient',
+        offer_download: state.webtools.workspace_offer_download !== false
       } : null
     };
 
     let res;
     try{
+      // In router mode the normal chat request is allowed to autoload a cold
+      // model. Arm the persistent status feed first so loading/progress events
+      // cannot race past the UI.
+      await ensureRouterEventStreamReady(connectionId);
       res = await fetch('api.php?action=chat_stream', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
@@ -10363,11 +14509,13 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
     } catch(err){
       // Abort or network failure.
       if (controller.signal.aborted) {
-        if (am) { am.stopped = true; am.incomplete = true; }
+        if (am) { am.stopped = true; am.incomplete = true; settleAgentActivity(am, 'error'); clearAgentArtifactLinks(am); }
       } else {
-        if (am) { am.content = 'Error: ' + (err?.message||String(err)); am.incomplete = false; am.stopped = false; }
+        if (am) { am.content = 'Error: ' + (err?.message||String(err)); am.incomplete = false; am.stopped = false; settleAgentActivity(am, 'error'); clearAgentArtifactLinks(am); }
       }
       state.streams.delete(chatId);
+      syncChatStreamingClass();
+      renderRuntimeActivity();
       renderSidebar();
       if (state.currentChat?.id === chat.id) { renderMessages(); syncSend(); updateTokenBarIdle(); }
       await saveChat(chat);
@@ -10377,8 +14525,10 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
 
     if(!res.ok){
       const t = await res.text();
-      if (am) { am.content = 'Error: ' + t; am.incomplete = false; am.stopped = false; }
+      if (am) { am.content = 'Error: ' + t; am.incomplete = false; am.stopped = false; settleAgentActivity(am, 'error'); }
       state.streams.delete(chatId);
+      syncChatStreamingClass();
+      renderRuntimeActivity();
       renderSidebar();
       if (state.currentChat?.id === chat.id) { renderMessages(); syncSend(); updateTokenBarIdle(); }
       await saveChat(chat);
@@ -10532,6 +14682,109 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
               continue;
             }
 
+            if(obj.type==='activity'){
+              const m = chat.messages[assistantIdx];
+              if (m && upsertAgentActivity(m, obj.event)) {
+                if (state.currentChat?.id === chat.id) {
+                  const msgEl = chatMsgs.querySelector(`.message[data-msg-index="${assistantIdx}"]`);
+                  const activityId = String(obj.event?.id || '').trim();
+                  const mergedEvent = activityId
+                    ? (m.activity || []).find(x=>String(x?.id || '') === activityId) || obj.event
+                    : obj.event;
+                  renderAgentActivityDom(msgEl, m, mergedEvent);
+                  scrollBottom();
+                }
+              }
+              continue;
+            }
+
+            if(obj.type==='mcp_artifacts_cleared'){
+              const m = chat.messages[assistantIdx];
+              if (m && clearAgentArtifactLinks(m) && state.currentChat?.id === chat.id) {
+                const msgEl = chatMsgs.querySelector(`.message[data-msg-index="${assistantIdx}"]`);
+                renderAgentActivityDom(msgEl, m);
+                updateStats(true);
+              }
+              continue;
+            }
+
+            if(obj.type==='mcp_context_savings'){
+              const m = chat.messages[assistantIdx];
+              if (m){
+                m.metrics = m.metrics || {};
+                const saved = Number(obj.saved_tokens);
+                const count = Number(obj.artifact_count);
+                if (Number.isFinite(saved)) m.metrics.mcp_context_saved_tokens = Math.max(0, Math.round(saved));
+                if (Number.isFinite(count)) m.metrics.mcp_artifact_count = Math.max(0, Math.round(count));
+                m.metrics.mcp_context_mode = String(obj.mode || 'externalize');
+                if (String(obj.mode || '') === 'externalize') state.ui.mcpContextMode = 'externalize';
+                if (state.currentChat?.id === chat.id) updateStats(true);
+              }
+              continue;
+            }
+
+            if(obj.type==='rag_sources'){
+              const m = chat.messages[assistantIdx];
+              if (m) {
+                // Keep provenance in state, but do not tear down/rebuild the
+                // assistant DOM immediately before token streaming starts.
+                // The normal final render shows the source cards after generation.
+                m.rag_sources = Array.isArray(obj.sources) ? obj.sources : [];
+              }
+              continue;
+            }
+
+            if(obj.type==='rag_retrieval_progress'){
+              setRagRetrievalProgressForChat(chatId, obj);
+              continue;
+            }
+
+            if(obj.type==='rag_retrieval_progress_done'){
+              clearRagRetrievalProgressForChat(chatId);
+              continue;
+            }
+
+            if(obj.type==='prompt_progress'){
+              setPromptProgressForChat(chatId, obj);
+              continue;
+            }
+
+            if(obj.type==='prompt_progress_done'){
+              clearPromptProgressForChat(chatId);
+              continue;
+            }
+
+            if(obj.type==='agent_turn_progress'){
+              const rawTurn = Number(obj.turn);
+              const rawCt = Number(obj.completion_tokens_estimate);
+              if (Number.isFinite(rawCt) && rawCt >= 0) {
+                const turn = Number.isFinite(rawTurn) ? Math.max(0, Math.trunc(rawTurn)) : agentLiveTurn;
+                if (turn !== agentLiveTurn) {
+                  agentLiveTurn = turn;
+                  agentLiveCompletionTokens = 0;
+                }
+                // Progress for one upstream turn must be monotonic. Real stats
+                // arriving in agent_turn_stats reset this temporary estimate.
+                agentLiveCompletionTokens = Math.max(agentLiveCompletionTokens, rawCt);
+                if (state.currentChat?.id === chat.id) updateStats(true);
+              }
+              continue;
+            }
+
+            if(obj.type==='agent_turn_stats'){
+              const summary = rememberAgentTurnStats(obj);
+              const m = chat.messages[assistantIdx];
+              if (m && summary) {
+                applyAgentUsageToMetrics(m, summary);
+                if (state.currentChat?.id === chat.id) {
+                  const msgEl = chatMsgs.querySelector(`.message[data-msg-index="${assistantIdx}"]`);
+                  if (msgEl) setMsgMetricsDom(msgEl, m.metrics);
+                  updateStats(true);
+                }
+              }
+              continue;
+            }
+
             if(obj.type==='stats'){
               const m = chat.messages[assistantIdx];
               if (m){
@@ -10570,6 +14823,11 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
               continue;
             }
 
+            if(obj.type==='workspace_update'){
+              if (obj.workspace) applyAgentWorkspaceUpdate(obj.workspace, chat);
+              continue;
+            }
+
             if(obj.type==='attachment'){
               const m = chat.messages[assistantIdx];
               if (m){
@@ -10580,8 +14838,15 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
               continue;
             }
             if(obj.type==='done'){
+              clearPromptProgressForChat(chatId);
               flushReasoningDom();
               const m = chat.messages[assistantIdx];
+              const finalAgentUsage = agentUsageSummary();
+
+              // Preserve aggregate usage across every internal model turn in an
+              // agent run. The last turn's prompt remains the context anchor; C,
+              // total usage and price cover the whole run.
+              if (m && finalAgentUsage) applyAgentUsageToMetrics(m, finalAgentUsage);
 
               // If backend didn't send stats, fall back to our rough estimate so the UI isn't blank.
               if (m){
@@ -10592,11 +14857,16 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
                 if (!Number.isFinite(Number(m.metrics.completion_tokens))) m.metrics.completion_tokens = ctEst;
                 if (!Number.isFinite(Number(m.metrics.total_tokens))) m.metrics.total_tokens = Number(m.metrics.prompt_tokens||0) + Number(m.metrics.completion_tokens||0);
 
-                // Also compute $ if a price is configured.
-                const ptUse = Number(m.metrics.prompt_tokens) || 0;
-                const ctUse = Number(m.metrics.completion_tokens) || 0;
-                const usd = calcPrice(ptUse, ctUse, (m.connection_id || connectionId), (m.model || model));
-                if (usd != null) m.metrics.price = usd;
+                // Also compute $ if a price is configured. For agent runs,
+                // applyAgentUsageToMetrics already summed the price of every
+                // internal model turn; do not overwrite it with last-prompt +
+                // cumulative-completion arithmetic.
+                if (finalAgentUsage?.price == null) {
+                  const ptUse = Number(m.metrics.prompt_tokens) || 0;
+                  const ctUse = Number(m.metrics.completion_tokens) || 0;
+                  const usd = calcPrice(ptUse, ctUse, (m.connection_id || connectionId), (m.model || model));
+                  if (usd != null) m.metrics.price = usd;
+                }
 
                 // Finalize this generation as a run (so Regenerate can accumulate $ across runs).
                 const ar = (m.metrics && m.metrics._active_run && typeof m.metrics._active_run === 'object') ? m.metrics._active_run : null;
@@ -10648,9 +14918,19 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
               updateStats(true);
 
               const met = (m && m.metrics && typeof m.metrics === 'object') ? m.metrics : {};
-              const pt = Number.isFinite(Number(met.prompt_tokens)) ? Number(met.prompt_tokens) : promptTok;
-              const ct = Number.isFinite(Number(met.completion_tokens)) ? Number(met.completion_tokens) : (estTok(m?.content) + estTok(m?.reasoning));
-              const tt = Number.isFinite(Number(met.total_tokens)) ? Number(met.total_tokens) : (pt + ct);
+              const lastAgentTurn = finalAgentUsage?.last || null;
+              // These chat.meta fields seed P for the *next* request. Therefore
+              // they must use only the last model turn, not cumulative agent
+              // completion usage (which is already contained in that last prompt).
+              const pt = lastAgentTurn?.pt != null
+                ? lastAgentTurn.pt
+                : (Number.isFinite(Number(met.prompt_tokens)) ? Number(met.prompt_tokens) : promptTok);
+              const ct = lastAgentTurn?.ct != null
+                ? lastAgentTurn.ct
+                : (Number.isFinite(Number(met.completion_tokens)) ? Number(met.completion_tokens) : (estTok(m?.content) + estTok(m?.reasoning)));
+              const tt = lastAgentTurn?.tt != null
+                ? lastAgentTurn.tt
+                : (pt + ct);
 
               const elapsed = (performance.now() - statsT0) / 1000;
               const tpsRaw = Number.isFinite(Number(met.gen_tps)) ? Number(met.gen_tps) : (elapsed > 0.15 ? (ct / elapsed) : 0);
@@ -10666,34 +14946,53 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
               chat.meta.last_elapsed_s = Number(elapsed.toFixed(1));
               chat.meta.last_tps = tps;
 
-              if (am) { am.incomplete = false; am.stopped = false; }
+              if (am) { am.incomplete = false; am.stopped = false; settleAgentActivity(am, 'done'); }
               clearStreamStatus();
               ended = true;
               break;
             }
             if(obj.type==='error'){
+              clearPromptProgressForChat(chatId);
               flushReasoningDom();
-              if (am) { am.content = 'Error: ' + (obj.error||'unknown'); am.incomplete = false; am.stopped = false; }
+              if (am) { am.content = 'Error: ' + (obj.error||'unknown'); am.incomplete = false; am.stopped = false; settleAgentActivity(am, 'error'); clearAgentArtifactLinks(am); }
               updateStats(true);
               clearStreamStatus();
               ended = true;
               break;
             }
-            if(obj.type==='content' || obj.type==='reasoning') applyDelta(obj.type, obj.delta||'');
+            if(obj.type==='content' || obj.type==='reasoning') {
+              clearPromptProgressForChat(chatId);
+              applyDelta(obj.type, obj.delta||'');
+            }
           }
           if (ended) break;
         }
         if (ended) break;
       }
+
+      // A clean ReadableStream EOF is not the same as the protocol's terminal
+      // `done` event. Treat a missing terminal frame as an interrupted response so
+      // the UI cannot remain animated forever and Resume stays available.
+      if (!ended && am) {
+        am.stopped = true;
+        am.incomplete = true;
+        settleAgentActivity(am, 'error');
+        clearAgentArtifactLinks(am);
+      }
     } catch(err){
       if (controller.signal.aborted) {
-        if (am) { am.stopped = true; am.incomplete = true; }
+        if (am) { am.stopped = true; am.incomplete = true; settleAgentActivity(am, 'error'); clearAgentArtifactLinks(am); }
       } else {
-        if (am) { am.content = 'Error: ' + (err?.message||String(err)); am.incomplete = false; am.stopped = false; }
+        if (am) { am.content = 'Error: ' + (err?.message||String(err)); am.incomplete = false; am.stopped = false; settleAgentActivity(am, 'error'); clearAgentArtifactLinks(am); }
       }
     } finally {
       flushReasoningDom();
+      // Defensive final reconciliation for any backend/tool path that omitted its
+      // terminal activity update.
+      if (am) settleAgentActivity(am, (am.stopped || am.incomplete) ? 'error' : 'done');
       state.streams.delete(chatId);
+      syncChatStreamingClass();
+      renderRuntimeActivity();
       clearStreamStatus();
       renderSidebar();
       if (state.currentChat?.id === chat.id) { syncSend(); renderMessages(); updateTokenBarIdle(); }
@@ -10704,11 +15003,44 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
 
   // ---------- Send / stream ----------
   async function send(){
-    if(isCurrentChatStreaming() || state.webFetchBusy) return;
+    if(isCurrentChatStreaming() || state.webFetchBusy || ragDraftBlocked()) return;
+    if (state.webtools?.rag && state.ui.ragAvailable) {
+      const caps = await ensureRagCapabilities(state.currentChat);
+      if (effectiveRagMode() === 'precise' && caps && caps.precise !== true) {
+        showRagCapabilityNotice('Precise RAG unavailable', 'Choose Fast, Hybrid, or Default after configuring a reranker in ragd.');
+        return;
+      }
+    }
     if(!state.currentChat){
+      // A tool toggle can be selected before the first chat is persisted. Keep
+      // that composer state across chat_create/openChat instead of resetting it.
+      const draftWebtools = {
+        web: !!state.webtools.web,
+        search: !!state.webtools.search,
+        rag: !!state.webtools.rag,
+        rag_mode: normalizeChatRagMode(state.webtools.rag_mode),
+        image: !!state.webtools.image,
+        document: !!state.webtools.document,
+        code_workspace: !!state.webtools.code_workspace,
+        workspace_id: String(state.webtools.workspace_id || ''),
+        workspace_name: String(state.webtools.workspace_name || ''),
+        workspace_access: String(state.webtools.workspace_access || 'write'),
+        workspace_strategy: 'efficient',
+        workspace_offer_download: state.webtools.workspace_offer_download !== false,
+        custom_tools: Array.isArray(state.webtools.custom_tools) ? [...state.webtools.custom_tools] : [],
+        mcp_servers: Array.isArray(state.webtools.mcp_servers) ? [...state.webtools.mcp_servers] : []
+      };
       const created = await api('chat_create', {folder_id:null});
       await reloadSidebar();
       await openChat(created.id);
+      const draftCaps = state.ragCapabilities.get('__draft__');
+      if (draftCaps) {
+        state.ragCapabilities.set(String(created.id || ''), draftCaps);
+        state.ragCapabilities.delete('__draft__');
+      }
+      Object.assign(state.webtools, draftWebtools);
+      persistCurrentWebTools();
+      renderWebTools();
     }
     const text = textarea.value.trim();
     if(!text && state.attachments.length===0) return;
@@ -10752,15 +15084,21 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
         truncated: a.truncated,
         not_sent: a.not_sent,
         note: a.note,
-        format: a.format
+        format: a.format,
+        rag_document_id: a.rag_document_id,
+        rag_chunks: a.rag_chunks,
+        rag_embedding_model: a.rag_embedding_model,
+        rag_state: a.rag_state,
+        rag_job_id: a.rag_job_id,
+        rag_error: a.rag_error
       }))
     };
     state.currentChat.messages = state.currentChat.messages || [];
     state.currentChat.messages.push(userMsg);
-    state.currentChat.messages.push({role:'assistant', content:'', reasoning:'', created_at: now(), model: state.ui.model, connection_id: state.ui.connectionId, incomplete:true, stopped:false});
+    state.currentChat.messages.push({role:'assistant', content:'', reasoning:'', activity:[], activity_total:0, activity_collapsed:false, created_at: now(), model: state.ui.model, connection_id: state.ui.connectionId, incomplete:true, stopped:false});
 
     textarea.value=''; textarea.style.height='auto';
-    state.attachments=[]; renderAttachments(); syncSend();
+    state.attachments=[]; renderAttachments(); renderWebTools(); syncSend();
     renderMessages();
 
     await streamAssistantForChat(state.currentChat, { mode:'new', assistantIdx: state.currentChat.messages.length-1 });
@@ -11078,6 +15416,11 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
       const r = await api('models');
       state.models = r.models || state.models;
       renderModels();
+      renderAgentCompactModelOptions();
+      renderAgentSupervisorModelOptions();
+      renderModelCapabilityControl();
+      syncRouterEventStream();
+      syncCurrentModelContext();
       // If Pricing's picker is open, refresh its list too (without touching chat selection).
       try{ if (pricingModelModal && pricingModelModal.classList.contains('open')) renderPricingModelPickerList(); }catch(_){ }
     }catch(_){}
@@ -11087,8 +15430,13 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
   async function init(){
     try{
       const b = await api('bootstrap');
-      if (b && b.logged_in===false){ if (typeof window.llcShowLogin==='function') window.llcShowLogin('Please sign in'); return; }
+      if (b && b.logged_in===false){
+        if (typeof window.llcSetAuthState==='function') window.llcSetAuthState(b.auth || {});
+        if (typeof window.llcShowLogin==='function') window.llcShowLogin(b?.auth?.initial_admin_setup_required ? '' : 'Please sign in');
+        return;
+      }
       state.user = b.user || null;
+      initLocalLightAI(b.locallightai || null);
       state.folders = b.folders || [];
       state.chats = b.chats || [];
       state.templates = b.templates || [];
@@ -11101,6 +15449,7 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
       state.perms.inheritGlobalVoice = !!b.inherit_global_voice;
       state.ui.connectionId = b.selected_connection_id || state.ui.connectionId || '';
       state.models = b.models || [];
+      state.ui.modelCapabilityOverrides = (b.model_capability_overrides && typeof b.model_capability_overrides === 'object') ? b.model_capability_overrides : {};
       state.ui.model = b.selected_model || state.ui.model || '';
       state.defaults.systemPrompt = b.system_prompt || '';
       state.ui.systemPrompt = state.defaults.systemPrompt;
@@ -11108,16 +15457,51 @@ ${String(a.name||a.url||a.type||'attachment').slice(0,120)}`);
       renderTemplatesMenu();
       
 // General (global) settings
-const __tmi = parseInt(String(b.tool_max_iters ?? state.ui.toolMaxIters ?? 10), 10);
-state.ui.toolMaxIters = (Number.isFinite(__tmi) ? Math.min(50, Math.max(1, __tmi)) : 10);
-if (settingToolMaxIters) settingToolMaxIters.value = String(state.ui.toolMaxIters);
-state.ui.uploadHardLimitMb = normalizeMbLimit(b.upload_hard_limit_mb ?? state.ui.uploadHardLimitMb ?? 25, 25, 1, 1024);
+state.ui.toolSimpleMaxIters = normalizeToolRoundLimit(b.tool_simple_max_iters ?? state.ui.toolSimpleMaxIters ?? 20, 20);
+state.ui.toolAgenticMaxIters = normalizeToolRoundLimit(b.tool_agentic_max_iters ?? state.ui.toolAgenticMaxIters ?? 200, 200);
+state.ui.agentActivityMode = normalizeAgentActivityMode(b.agent_activity_mode ?? state.ui.agentActivityMode ?? 'tail');
+state.ui.agentActivityMaxTokens = normalizeAgentActivityMaxTokens(b.agent_activity_max_tokens ?? state.ui.agentActivityMaxTokens ?? 1000, 1000);
+state.ui.agentCompactAboveTokens = normalizeAgentCompactAboveTokens(b.agent_compact_above_tokens ?? state.ui.agentCompactAboveTokens ?? 100000, 100000);
+state.ui.agentCompactKeepToolRounds = normalizeAgentCompactKeepToolRounds(b.agent_compact_keep_tool_rounds ?? state.ui.agentCompactKeepToolRounds ?? 6, 6);
+state.ui.agentCompactEmergencyEnabled = (b.agent_compact_emergency_enabled == null) ? false : (Number(b.agent_compact_emergency_enabled) !== 0);
+state.ui.agentCompactModelKey = String(b.agent_compact_model_key || state.ui.agentCompactModelKey || '__current__');
+state.ui.agentCompactReasoningNone = (b.agent_compact_reasoning_none == null) ? true : (Number(b.agent_compact_reasoning_none) !== 0);
+state.ui.agentSupervisorEveryToolCalls = normalizeAgentSupervisorEveryToolCalls(b.agent_supervisor_every_tool_calls ?? state.ui.agentSupervisorEveryToolCalls ?? 0, 0);
+state.ui.agentSupervisorModelKey = String(b.agent_supervisor_model_key || state.ui.agentSupervisorModelKey || '__current__');
+if (settingToolSimpleMaxIters) settingToolSimpleMaxIters.value = String(state.ui.toolSimpleMaxIters);
+if (settingToolAgenticMaxIters) settingToolAgenticMaxIters.value = String(state.ui.toolAgenticMaxIters);
+if (settingAgentActivityMode) settingAgentActivityMode.value = state.ui.agentActivityMode;
+if (settingAgentActivityMaxTokens) settingAgentActivityMaxTokens.value = String(state.ui.agentActivityMaxTokens);
+if (settingAgentCompactAboveTokens) settingAgentCompactAboveTokens.value = String(state.ui.agentCompactAboveTokens);
+if (settingAgentCompactKeepToolRounds) settingAgentCompactKeepToolRounds.value = String(state.ui.agentCompactKeepToolRounds);
+if (settingAgentCompactEmergencyEnabled) settingAgentCompactEmergencyEnabled.checked = !!state.ui.agentCompactEmergencyEnabled;
+if (settingAgentCompactReasoningNone) settingAgentCompactReasoningNone.checked = !!state.ui.agentCompactReasoningNone;
+if (settingAgentSupervisorEveryToolCalls) settingAgentSupervisorEveryToolCalls.value = String(state.ui.agentSupervisorEveryToolCalls);
+renderAgentCompactModelOptions();
+renderAgentSupervisorModelOptions();
+state.ui.uploadHardLimitMb = normalizeMbLimit(b.upload_hard_limit_mb ?? state.ui.uploadHardLimitMb ?? 50, 50, 1, 1024);
 state.ui.mediaImageInlineLimitMb = normalizeMbLimit(b.media_image_inline_limit_mb ?? state.ui.mediaImageInlineLimitMb ?? 8, 8, 0, 1024);
 state.ui.mediaAudioInlineLimitMb = normalizeMbLimit(b.media_audio_inline_limit_mb ?? state.ui.mediaAudioInlineLimitMb ?? 15, 15, 0, 1024);
+state.ui.pdfMemorySaving = (b.pdf_memory_saving == null) ? false : (Number(b.pdf_memory_saving) !== 0);
 if (settingUploadHardLimitMb) settingUploadHardLimitMb.value = String(state.ui.uploadHardLimitMb);
 if (settingMediaImageInlineLimitMb) settingMediaImageInlineLimitMb.value = String(state.ui.mediaImageInlineLimitMb);
 if (settingMediaAudioInlineLimitMb) settingMediaAudioInlineLimitMb.value = String(state.ui.mediaAudioInlineLimitMb);
+if (settingPdfMemorySaving) settingPdfMemorySaving.checked = !!state.ui.pdfMemorySaving;
 renderGeneralSettingsUI();
+
+// RAG settings (URL-driven infrastructure; activation/default are personal)
+state.ui.ragAvailable = (b.rag_available == null) ? false : (Number(b.rag_available) !== 0);
+state.ui.ragAutoEnable = (b.rag_auto_enable == null) ? false : (Number(b.rag_auto_enable) !== 0);
+state.ui.ragUrl = String(b.rag_url || '');
+state.ui.ragTopK = normalizeRagTopK(b.rag_top_k ?? state.ui.ragTopK ?? 8);
+state.ui.ragTimeoutSec = normalizeRagTimeout(b.rag_timeout_sec ?? state.ui.ragTimeoutSec ?? 180);
+state.ui.ragDefaultMode = normalizeRagMode(b.rag_default_mode ?? state.ui.ragDefaultMode ?? 'hybrid', 'hybrid');
+if (settingRagAutoEnable) settingRagAutoEnable.checked = !!state.ui.ragAutoEnable;
+if (settingRagUrl) settingRagUrl.value = state.ui.ragUrl;
+if (settingRagTopK) settingRagTopK.value = String(state.ui.ragTopK);
+if (settingRagTimeoutSec) settingRagTimeoutSec.value = String(state.ui.ragTimeoutSec);
+if (settingRagDefaultMode) settingRagDefaultMode.value = state.ui.ragDefaultMode;
+renderRagSettingsUI();
 
 // Web settings
 state.ui.webAutoEnable = (b.web_auto_enable == null) ? false : (Number(b.web_auto_enable) !== 0);
@@ -11126,22 +15510,22 @@ if (settingWebAutoEnable) settingWebAutoEnable.checked = !!state.ui.webAutoEnabl
 state.ui.webSearchAutoEnable = (b.web_search_auto_enable == null) ? false : (Number(b.web_search_auto_enable) !== 0);
 if (settingWebSearchAutoEnable) settingWebSearchAutoEnable.checked = !!state.ui.webSearchAutoEnable;
 
-state.ui.webPreferAttachments = (b.web_prefer_attachments == null) ? true : (Number(b.web_prefer_attachments) !== 0);
+state.ui.webPreferAttachments = (b.web_prefer_attachments == null) ? false : (Number(b.web_prefer_attachments) !== 0);
 if (settingWebPreferAtt) settingWebPreferAtt.checked = !!state.ui.webPreferAttachments;
 
 state.ui.mediaImageInline = (b.media_image_inline == null) ? true : (Number(b.media_image_inline) !== 0);
 if (settingMediaImageInline) settingMediaImageInline.checked = !!state.ui.mediaImageInline;
 
-state.ui.mediaAudioInline = (b.media_audio_inline == null) ? true : (Number(b.media_audio_inline) !== 0);
+state.ui.mediaAudioInline = (b.media_audio_inline == null) ? false : (Number(b.media_audio_inline) !== 0);
 if (settingMediaAudioInline) settingMediaAudioInline.checked = !!state.ui.mediaAudioInline;
 
 state.ui.webAllowPrivate = (b.web_allow_private == null) ? false : (Number(b.web_allow_private) !== 0);
 if (settingWebAllowPrivate) settingWebAllowPrivate.checked = !!state.ui.webAllowPrivate;
 
-state.ui.webFetchMaxChars = normalizeWebLimit(b.web_fetch_max_chars ?? state.ui.webFetchMaxChars ?? 20000, 20000);
+state.ui.webFetchMaxChars = normalizeWebLimit(b.web_fetch_max_chars ?? state.ui.webFetchMaxChars ?? 50000, 50000);
 if (settingWebFetchMaxChars) settingWebFetchMaxChars.value = String(state.ui.webFetchMaxChars);
 
-state.ui.webToolMaxChars = normalizeWebLimit(b.web_tool_max_chars ?? state.ui.webToolMaxChars ?? 12000, 12000);
+state.ui.webToolMaxChars = normalizeWebLimit(b.web_tool_max_chars ?? state.ui.webToolMaxChars ?? 60000, 60000);
 if (settingWebToolMaxChars) settingWebToolMaxChars.value = String(state.ui.webToolMaxChars);
 
 renderWebSettingsUI();
@@ -11150,6 +15534,7 @@ renderWebSettingsUI();
 state.ui.searchProvider = String(b.search_provider || state.ui.searchProvider || 'serper');
 state.ui.serperApiKey = String(b.serper_api_key || '');
 state.ui.braveApiKey = String(b.brave_api_key || '');
+state.ui.exaApiKey = String(b.exa_api_key || '');
 state.ui.searchCustomUrl = String(b.search_custom_url || '');
 state.ui.searchCustomNewsUrl = String(b.search_custom_news_url || '');
 state.ui.searchCustomAllowPrivate = (b.search_custom_allow_private == null) ? false : (Number(b.search_custom_allow_private) !== 0);
@@ -11165,6 +15550,7 @@ state.ui.searchNum = (Number.isFinite(sn) && sn>=1 && sn<=20) ? sn : 10;
 if (settingSearchProvider) settingSearchProvider.value = state.ui.searchProvider;
 if (settingSerperKey) settingSerperKey.value = state.ui.serperApiKey;
 if (settingBraveKey) settingBraveKey.value = state.ui.braveApiKey;
+if (settingExaKey) settingExaKey.value = state.ui.exaApiKey;
 if (settingSearchCustomUrl) settingSearchCustomUrl.value = state.ui.searchCustomUrl;
 if (settingSearchCustomNewsUrl) settingSearchCustomNewsUrl.value = state.ui.searchCustomNewsUrl;
 if (settingSearchCustomAllowPrivate) settingSearchCustomAllowPrivate.checked = !!state.ui.searchCustomAllowPrivate;
@@ -11216,6 +15602,15 @@ state.ui.customTools = Array.isArray(b.custom_tools) ? b.custom_tools : [];
 state.ui.customToolsAutoEnable = (b.custom_tools_auto_enable == null) ? false : (Number(b.custom_tools_auto_enable) !== 0);
 if (settingCustomToolsAutoEnable) settingCustomToolsAutoEnable.checked = !!state.ui.customToolsAutoEnable;
 renderCustomToolsSettingsUI();
+state.ui.mcpServersJson = String(b.mcp_servers_json || '[]');
+state.ui.mcpServers = Array.isArray(b.mcp_servers) ? b.mcp_servers : [];
+state.ui.mcpServersAutoEnable = (b.mcp_servers_auto_enable == null) ? false : (Number(b.mcp_servers_auto_enable) !== 0);
+state.ui.mcpContextMode = String(b.mcp_context_mode || 'externalize') === 'externalize' ? 'externalize' : 'full';
+state.ui.mcpExternalizeAboveTokens = mcpClamp(b.mcp_externalize_above_tokens, 500, 200000, 6000);
+state.ui.mcpPreviewMaxTokens = mcpClamp(b.mcp_preview_max_tokens, 200, 50000, 2500);
+state.ui.mcpFullFirstPassMaxTokens = mcpClamp(b.mcp_full_first_pass_max_tokens, 0, 200000, 32000);
+if (settingMcpServersAutoEnable) settingMcpServersAutoEnable.checked = !!state.ui.mcpServersAutoEnable;
+renderMcpSettingsUI();
 
 // ComfyUI image settings
 state.ui.imageComfyUrl = String(b.image_comfyui_url || state.ui.imageComfyUrl || '');
@@ -11229,6 +15624,38 @@ state.ui.imageComfyHeight = (b.image_comfyui_height == null) ? (state.ui.imageCo
 state.ui.imageComfyBatch = (b.image_comfyui_batch == null) ? (state.ui.imageComfyBatch ?? 1) : Number(b.image_comfyui_batch);
 state.ui.imageComfyTimeout = (b.image_comfyui_timeout_sec == null) ? (state.ui.imageComfyTimeout ?? 900) : Number(b.image_comfyui_timeout_sec);
 state.ui.imageComfyApplyDefaults = (b.image_comfyui_apply_defaults == null) ? (state.ui.imageComfyApplyDefaults ?? false) : (Number(b.image_comfyui_apply_defaults) !== 0);
+
+let comfyProfilesLoaded = [];
+try {
+  const parsed = JSON.parse(String(b.image_comfyui_profiles_json || '[]'));
+  if (Array.isArray(parsed)) comfyProfilesLoaded = parsed;
+} catch(_){ }
+state.ui.imageComfyProfiles = comfyProfilesLoaded;
+state.ui.imageComfyProfileId = String(b.image_comfyui_profile_id || '');
+ensureComfyProfiles();
+syncComfyStateFromActiveProfile();
+
+state.ui.imageEditComfyUrl = String(b.image_edit_comfyui_url || state.ui.imageEditComfyUrl || '');
+state.ui.imageEditComfyWorkflow = String(b.image_edit_comfyui_workflow_json || state.ui.imageEditComfyWorkflow || '');
+state.ui.imageEditComfyBindings = String(b.image_edit_comfyui_bindings_json || state.ui.imageEditComfyBindings || '');
+state.ui.imageEditComfySeed = (b.image_edit_comfyui_seed == null) ? (state.ui.imageEditComfySeed ?? -1) : Number(b.image_edit_comfyui_seed);
+state.ui.imageEditComfySteps = (b.image_edit_comfyui_steps == null) ? (state.ui.imageEditComfySteps ?? 20) : Number(b.image_edit_comfyui_steps);
+state.ui.imageEditComfyGuidance = (b.image_edit_comfyui_guidance == null) ? (state.ui.imageEditComfyGuidance ?? 3.5) : Number(b.image_edit_comfyui_guidance);
+state.ui.imageEditComfyWidth = (b.image_edit_comfyui_width == null) ? (state.ui.imageEditComfyWidth ?? 1024) : Number(b.image_edit_comfyui_width);
+state.ui.imageEditComfyHeight = (b.image_edit_comfyui_height == null) ? (state.ui.imageEditComfyHeight ?? 1024) : Number(b.image_edit_comfyui_height);
+state.ui.imageEditComfyBatch = (b.image_edit_comfyui_batch == null) ? (state.ui.imageEditComfyBatch ?? 1) : Number(b.image_edit_comfyui_batch);
+state.ui.imageEditComfyMegapixels = (b.image_edit_comfyui_megapixels == null) ? (state.ui.imageEditComfyMegapixels ?? 1) : Number(b.image_edit_comfyui_megapixels);
+state.ui.imageEditComfyTimeout = (b.image_edit_comfyui_timeout_sec == null) ? (state.ui.imageEditComfyTimeout ?? 900) : Number(b.image_edit_comfyui_timeout_sec);
+state.ui.imageEditComfyApplyDefaults = (b.image_edit_comfyui_apply_defaults == null) ? (state.ui.imageEditComfyApplyDefaults ?? false) : (Number(b.image_edit_comfyui_apply_defaults) !== 0);
+let imageEditComfyProfilesLoaded = [];
+try {
+  const parsed = JSON.parse(String(b.image_edit_comfyui_profiles_json || '[]'));
+  if (Array.isArray(parsed)) imageEditComfyProfilesLoaded = parsed;
+} catch(_) { }
+state.ui.imageEditComfyProfiles = imageEditComfyProfilesLoaded;
+state.ui.imageEditComfyProfileId = String(b.image_edit_comfyui_profile_id || '');
+ensureImageEditComfyProfiles();
+syncImageEditComfyStateFromActiveProfile();
 
 renderImageSettingsUI();
 
@@ -11260,17 +15687,24 @@ renderImageSettingsUI();
 // Default composer toggle (chat-specific override will be applied in openChat).
       state.webtools.web = !!state.ui.webAutoEnable;
       state.webtools.search = !!state.ui.webSearchAutoEnable;
+      state.webtools.rag = !!state.ui.ragAvailable && !!state.ui.ragAutoEnable;
+      state.webtools.rag_mode = 'default';
       state.webtools.image = !!state.ui.imageAutoEnable;
         state.webtools.document = false;
         state.webtools.code_workspace = false;
         state.webtools.workspace_id = '';
         state.webtools.workspace_name = '';
-        state.webtools.workspace_access = 'read';
+        state.webtools.workspace_access = 'write';
         state.webtools.workspace_strategy = 'efficient';
+        state.webtools.workspace_offer_download = true;
         state.webtools.custom_tools = defaultCustomToolNames();
+        state.webtools.mcp_servers = defaultMcpServerIds();
       renderWebTools();
       if(state.ui.model) modelBtn.firstChild.textContent = headerModelText() + ' ';
       renderModels();
+      renderModelCapabilityControl();
+      syncRouterEventStream();
+      syncCurrentModelContext();
       renderSidebar();
       renderMessages();
       syncSend();

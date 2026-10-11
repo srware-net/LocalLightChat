@@ -32,13 +32,19 @@ function llc_validate_url(string $url): string {
     return $url;
 }
 
-function fetchHtml(string $url): string {
+function fetchResource(string $url): array {
     if (!function_exists('curl_init')) {
-        $html = @file_get_contents($url);
-        if ($html === false) {
+        $body = @file_get_contents($url);
+        if ($body === false) {
             throw new RuntimeException("Konnte URL nicht laden (file_get_contents): $url");
         }
-        return $html;
+        $contentType = '';
+        foreach (($http_response_header ?? []) as $headerLine) {
+            if (stripos((string)$headerLine, 'Content-Type:') === 0) {
+                $contentType = trim(substr((string)$headerLine, strlen('Content-Type:')));
+            }
+        }
+        return ['body'=>(string)$body, 'content_type'=>$contentType, 'effective_url'=>$url];
     }
 
     $ch = curl_init($url);
@@ -49,28 +55,129 @@ function fetchHtml(string $url): string {
         CURLOPT_CONNECTTIMEOUT => 10,
         CURLOPT_TIMEOUT        => 25,
         CURLOPT_ENCODING       => '',
-        CURLOPT_USERAGENT      => 'Mozilla/5.0 (LocalLightChat; Readability)',
+        CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
         CURLOPT_HTTPHEADER     => [
-            'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept: text/html,application/xhtml+xml,application/json,text/plain,application/xml;q=0.9,text/*;q=0.8,*/*;q=0.7',
             'Accept-Language: de-DE,de;q=0.9,en;q=0.7',
         ],
     ]);
 
-    $html = curl_exec($ch);
-    if ($html === false) {
+    $body = curl_exec($ch);
+    if ($body === false) {
         $err = curl_error($ch);
         curl_close($ch);
         throw new RuntimeException("cURL Fehler: $err");
     }
 
     $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $contentType = (string)(curl_getinfo($ch, CURLINFO_CONTENT_TYPE) ?: '');
+    $effectiveUrl = (string)(curl_getinfo($ch, CURLINFO_EFFECTIVE_URL) ?: $url);
     curl_close($ch);
 
     if ($code >= 400) {
         throw new RuntimeException("HTTP Fehler $code bei $url");
     }
 
-    return $html;
+    return ['body'=>(string)$body, 'content_type'=>$contentType, 'effective_url'=>$effectiveUrl];
+}
+
+function httpMime(string $contentType): string {
+    return strtolower(trim(explode(';', $contentType, 2)[0] ?? ''));
+}
+
+function httpCharset(string $contentType): string {
+    if (preg_match('~(?:^|;)\s*charset\s*=\s*["\']?([^;"\'\s]+)~i', $contentType, $m)) {
+        return trim((string)$m[1]);
+    }
+    return '';
+}
+
+function isHtmlMime(string $mime): bool {
+    return $mime === 'text/html' || $mime === 'application/xhtml+xml';
+}
+
+function isTextMime(string $mime): bool {
+    if ($mime === '') return false;
+    if (str_starts_with($mime, 'text/')) return true;
+    if ($mime === 'application/json' || str_ends_with($mime, '+json')) return true;
+    if ($mime === 'application/xml' || str_ends_with($mime, '+xml')) return true;
+    return in_array($mime, [
+        'application/javascript',
+        'application/x-javascript',
+        'application/yaml',
+        'application/x-yaml',
+        'application/toml',
+        'application/sql',
+        'application/graphql',
+    ], true);
+}
+
+function bodyLooksHtml(string $body): bool {
+    $sample = ltrim(substr($body, 0, 8192), "\xEF\xBB\xBF\x00..\x20");
+    return (bool)preg_match('~^(?:<!doctype\s+html\b|<html\b|<head\b|<body\b)~i', $sample);
+}
+
+function bodyLooksText(string $body): bool {
+    if ($body === '') return true;
+    if (str_starts_with($body, "\xFF\xFE") || str_starts_with($body, "\xFE\xFF") || str_starts_with($body, "\xEF\xBB\xBF")) return true;
+    $sample = substr($body, 0, 8192);
+    if (strpos($sample, "\0") !== false) return false;
+    $len = strlen($sample);
+    if ($len === 0) return true;
+    $controls = 0;
+    for ($i = 0; $i < $len; $i++) {
+        $o = ord($sample[$i]);
+        if ($o < 32 && $o !== 9 && $o !== 10 && $o !== 13) $controls++;
+    }
+    return ($controls / $len) < 0.02;
+}
+
+function decodeHttpText(string $body, string $contentType): string {
+    if ($body === '') return '';
+
+    $sourceEncoding = httpCharset($contentType);
+    if (str_starts_with($body, "\xEF\xBB\xBF")) {
+        $body = substr($body, 3);
+        $sourceEncoding = 'UTF-8';
+    } elseif (str_starts_with($body, "\xFF\xFE")) {
+        $body = substr($body, 2);
+        $sourceEncoding = 'UTF-16LE';
+    } elseif (str_starts_with($body, "\xFE\xFF")) {
+        $body = substr($body, 2);
+        $sourceEncoding = 'UTF-16BE';
+    }
+
+    $isUtf8 = static function(string $s): bool {
+        if (function_exists('mb_check_encoding')) return mb_check_encoding($s, 'UTF-8');
+        return preg_match('//u', $s) === 1;
+    };
+    $convert = static function(string $s, string $from): ?string {
+        $from = trim($from);
+        if ($from === '') return null;
+        if (function_exists('mb_convert_encoding')) {
+            try { return mb_convert_encoding($s, 'UTF-8', $from); } catch (Throwable $e) { /* try iconv */ }
+        }
+        if (function_exists('iconv')) {
+            $v = @iconv($from, 'UTF-8//IGNORE', $s);
+            if ($v !== false) return $v;
+        }
+        return null;
+    };
+
+    if ($sourceEncoding !== '') {
+        $norm = strtolower(str_replace(['_', ' '], '-', $sourceEncoding));
+        if (!in_array($norm, ['utf-8', 'utf8'], true)) {
+            $converted = $convert($body, $sourceEncoding);
+            if ($converted !== null) return $converted;
+        }
+    }
+    if ($isUtf8($body)) return $body;
+
+    $converted = $convert($body, 'Windows-1252');
+    if ($converted !== null) return $converted;
+    $converted = $convert($body, 'ISO-8859-1');
+    if ($converted !== null) return $converted;
+    return preg_replace('/[\x80-\xFF]+/', '', $body) ?? $body;
 }
 
 /**
@@ -104,19 +211,35 @@ $maxChars = (int)($rawMax !== '' ? $rawMax : '20000');
 if ($maxChars < 0) $maxChars = 0;
 
 try {
-    $html = fetchHtml($url);
+    $response = fetchResource($url);
+    $body = (string)($response['body'] ?? '');
+    $contentType = (string)($response['content_type'] ?? '');
+    $effectiveUrl = (string)($response['effective_url'] ?? $url);
+    $mime = httpMime($contentType);
 
-    $config = new Configuration();
-    $config->setOriginalURL($url);
-    $config->setFixRelativeURLs(false);
-    $config->setArticleByline(true);
+    $title = '';
+    $author = '';
+    if (isHtmlMime($mime) || ($mime === '' && bodyLooksHtml($body)) || ($mime === 'application/octet-stream' && bodyLooksHtml($body))) {
+        $config = new Configuration();
+        $config->setOriginalURL($effectiveUrl);
+        $config->setFixRelativeURLs(false);
+        $config->setArticleByline(true);
 
-    $readability = new Readability($config);
-    $readability->parse($html);
+        $readability = new Readability($config);
+        $readability->parse($body);
 
-    $title  = $readability->getTitle() ?? '';
-    $author = $readability->getAuthor() ?? '';
-    $text   = htmlToText($readability->getContent() ?? '');
+        $title  = $readability->getTitle() ?? '';
+        $author = $readability->getAuthor() ?? '';
+        $text   = htmlToText($readability->getContent() ?? '');
+    } elseif (isTextMime($mime) || (($mime === '' || $mime === 'application/octet-stream') && bodyLooksText($body))) {
+        $text = decodeHttpText($body, $contentType);
+        $text = str_replace("\r\n", "\n", $text);
+        $text = str_replace("\r", "\n", $text);
+        $text = trim($text);
+    } else {
+        $shownMime = $mime !== '' ? $mime : 'unknown content type';
+        throw new RuntimeException('Unsupported binary content (' . $shownMime . ')');
+    }
 
     $truncated = false;
     if ($maxChars > 0 && mb_strlen($text, 'UTF-8') > $maxChars) {

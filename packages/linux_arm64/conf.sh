@@ -1,4 +1,4 @@
-	CC=musl-gcc \
+CC=musl-gcc \
 ./configure \
   --prefix=. \
   --with-http_ssl_module \

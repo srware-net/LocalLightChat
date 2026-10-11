@@ -1,14 +1,21 @@
 services:
   locallightchat:
-    build: .
+    build:
+      context: .
     container_name: locallightchat
     ports:
       - "${LLC_HTTP_BIND:-127.0.0.1}:${LLC_HTTP_PORT:-8181}:80"
       - "${LLC_HTTPS_BIND:-127.0.0.1}:${LLC_HTTPS_PORT:-8182}:443"
+    extra_hosts:
+      # Stable name for services running natively on the Docker host.
+      # Examples: MCP, llama.cpp embedding/reranker servers, ComfyUI, local APIs.
+      - "host.docker.internal:host-gateway"
     volumes:
       - locallightchat_data:/var/lib/locallightchat/data
       - locallightchat_uploads:/var/lib/locallightchat/uploads
       - locallightchat_tmp:/var/lib/locallightchat/tmp
+      - locallightchat_workspaces:/var/lib/locallightchat/workspaces
+      - ./config:/config:ro
       - ./certs:/etc/nginx/certs:ro
     restart: unless-stopped
 
@@ -16,3 +23,4 @@ volumes:
   locallightchat_data:
   locallightchat_uploads:
   locallightchat_tmp:
+  locallightchat_workspaces:

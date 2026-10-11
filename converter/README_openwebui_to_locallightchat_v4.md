@@ -2,6 +2,8 @@
 
 A Python converter for migrating chats from an OpenWebUI SQLite database into a LocalLightChat SQLite database.
 
+**Current converter version: v4.** The embedded clean database schema matches the current LocalLightChat database structure, including archive folders, workspaces, artifacts, MCP sessions, and file-library/RAG fields.
+
 The converter is designed to be safe by default:
 
 - It creates a fresh LocalLightChat-compatible database unless you explicitly provide a template database.
@@ -56,7 +58,7 @@ If you publish this tool, keep the third-party notice above visible in the READM
 ## Basic usage
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db
+python convert_openwebui_to_locallightchat_v4.py openwebui.db
 ```
 
 This creates:
@@ -83,14 +85,14 @@ If your OpenWebUI database references uploaded files, images, or audio files, po
 ### Windows
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db ^
+python convert_openwebui_to_locallightchat_v4.py openwebui.db ^
   --uploads-dir C:\finetune\openwebui\uploads
 ```
 
 ### Linux/macOS
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir /path/to/openwebui/uploads
 ```
 
@@ -118,6 +120,8 @@ The converter currently migrates:
 - Audio attachments
 - Basic attachment references inside LocalLightChat `messages_json`
 
+The generated LocalLightChat database also includes the current LocalLightChat schema for features such as archive folders, workspaces, artifacts, MCP sessions, and file-library/RAG metadata. These structures are created for compatibility; they are not populated from unrelated OpenWebUI data unless the converter has an explicit mapping for that data.
+
 The converter intentionally does **not** migrate:
 
 - API keys
@@ -135,7 +139,7 @@ LocalLightChat connections and global settings are created with empty/default AP
 ## Command overview
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py [options] openwebui_db
+python convert_openwebui_to_locallightchat_v4.py [options] openwebui_db
 ```
 
 The only required argument is:
@@ -147,7 +151,7 @@ openwebui_db
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db
+python convert_openwebui_to_locallightchat_v4.py openwebui.db
 ```
 
 ---
@@ -161,19 +165,19 @@ Path to the OpenWebUI SQLite database you want to import.
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db
+python convert_openwebui_to_locallightchat_v4.py openwebui.db
 ```
 
 Example with an absolute Windows path:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py C:\finetune\openwebui\openwebui.db
+python convert_openwebui_to_locallightchat_v4.py C:\finetune\openwebui\openwebui.db
 ```
 
 Example with an absolute Linux/macOS path:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py /srv/openwebui/openwebui.db
+python convert_openwebui_to_locallightchat_v4.py /srv/openwebui/openwebui.db
 ```
 
 ---
@@ -193,13 +197,13 @@ locallightchat_converted.sqlite
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --out my_llc.sqlite
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --out my_llc.sqlite
 ```
 
 Windows example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --out C:\finetune\converted\llc.sqlite
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --out C:\finetune\converted\llc.sqlite
 ```
 
 ---
@@ -213,10 +217,10 @@ This is already the default behavior, so this option is mostly useful for explic
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --clean
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --clean
 ```
 
-Clean mode means the converter creates a fresh LocalLightChat database from the schema embedded in the converter script.
+Clean mode means the converter creates a fresh LocalLightChat database from the schema embedded in the converter script. In v4, that embedded schema includes the current LocalLightChat extensions such as archive-folder support, workspaces, artifacts, MCP sessions, and file-library/RAG fields.
 
 ---
 
@@ -229,14 +233,14 @@ The converter copies the template database to the output path and then imports t
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --template locallightchat.sqlite \
   --out converted.sqlite
 ```
 
-Use this if your LocalLightChat version has a newer or customized database schema and you want the converter to preserve that exact schema.
+Use this mainly when you want to preserve an installation-specific/customized schema, or when a future LocalLightChat release has moved beyond the schema embedded in this converter. For the LocalLightChat structure targeted by converter v4, a template is not required.
 
-Important: by default, when using `--template`, existing user/chat/folder/file/settings data in the copied output database is cleared before import. Use `--keep-existing` if you want to preserve existing template data.
+Important: by default, when using `--template`, existing imported/user-owned LocalLightChat data in the copied output database is cleared before import. This includes the standard user/chat/folder/file/template/session data as well as current user-owned areas such as MCP sessions, artifacts, and workspaces. Use `--keep-existing` if you want to preserve existing template data.
 
 ---
 
@@ -244,14 +248,14 @@ Important: by default, when using `--template`, existing user/chat/folder/file/s
 
 Only meaningful together with `--template`.
 
-If this option is not used, the converter wipes existing LocalLightChat data from the copied template before importing OpenWebUI data.
+If this option is not used, the converter wipes existing LocalLightChat import/user data from the copied template before importing OpenWebUI data, including current user-owned tables such as MCP sessions, artifacts, and workspaces.
 
 If this option is used, existing data in the template copy is kept and the imported OpenWebUI data is added to it.
 
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --template locallightchat.sqlite \
   --out merged.sqlite \
   --keep-existing
@@ -276,7 +280,7 @@ admin
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --admin-user stefan
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --admin-user stefan
 ```
 
 Resulting login:
@@ -303,7 +307,7 @@ admin
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --admin-password secret123
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --admin-password secret123
 ```
 
 Resulting login:
@@ -328,7 +332,7 @@ u_admin
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --local-user-id u_stefan
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --local-user-id u_stefan
 ```
 
 Most users do not need to change this. It is mainly useful if you are merging into an existing LocalLightChat database and want to avoid ID collisions.
@@ -354,7 +358,7 @@ Only the active/current OpenWebUI branch is converted into each LocalLightChat c
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --branch-mode active
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --branch-mode active
 ```
 
 This is the safest and cleanest mode if you want one LocalLightChat chat per OpenWebUI chat.
@@ -368,7 +372,7 @@ Converts all OpenWebUI messages chronologically into a single LocalLightChat cha
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --branch-mode all
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --branch-mode all
 ```
 
 This preserves more raw message content, but it can look odd because alternate branches get flattened into one linear conversation.
@@ -384,7 +388,7 @@ Converts OpenWebUI branch paths into separate LocalLightChat cloned chats.
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --branch-mode branched
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --branch-mode branched
 ```
 
 In this mode, the main active branch becomes the primary LocalLightChat chat. Alternate OpenWebUI branches become additional LocalLightChat chats with clone metadata in `meta_json`, using the LocalLightChat clone/attached-chat model.
@@ -417,13 +421,13 @@ Shortcut for:
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --with-branched
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --with-branched
 ```
 
 The underscore alias also works:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --with_branched
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --with_branched
 ```
 
 ---
@@ -448,13 +452,13 @@ Path to the OpenWebUI uploads folder.
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --uploads-dir C:\finetune\openwebui\uploads
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --uploads-dir C:\finetune\openwebui\uploads
 ```
 
 Linux/macOS:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --uploads-dir /srv/openwebui/uploads
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --uploads-dir /srv/openwebui/uploads
 ```
 
 Use this when images or audio files are missing after conversion. The SQLite database often does not contain the actual file bytes, so the converter needs access to the external files.
@@ -474,7 +478,7 @@ Default:
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --media-storage uploads \
   --llc-uploads-dir ./uploads
 ```
@@ -482,7 +486,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db \
 Windows example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db ^
+python convert_openwebui_to_locallightchat_v4.py openwebui.db ^
   --media-storage uploads ^
   --llc-uploads-dir C:\finetune\locallightchat\uploads
 ```
@@ -502,7 +506,7 @@ Default:
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --media-storage uploads \
   --llc-upload-url-prefix ./uploads
 ```
@@ -510,7 +514,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db \
 If your LocalLightChat instance expects a different public path, set it here:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --media-storage uploads \
   --llc-upload-url-prefix /uploads
 ```
@@ -542,7 +546,7 @@ auto
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --media-storage auto
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --media-storage auto
 ```
 
 This option applies to both images and audio unless overridden by `--image-storage` or `--audio-storage`.
@@ -558,7 +562,7 @@ Small media files are embedded inline. Larger media files are copied to the Loca
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir C:\finetune\openwebui\uploads \
   --media-storage auto
 ```
@@ -579,7 +583,7 @@ Embeds all image and audio attachments directly into the LocalLightChat database
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir C:\finetune\openwebui\uploads \
   --media-storage inline
 ```
@@ -614,7 +618,7 @@ Copies image and audio attachments into a LocalLightChat uploads folder and refe
 Example:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir C:\finetune\openwebui\uploads \
   --media-storage uploads
 ```
@@ -655,14 +659,14 @@ Overrides `--media-storage` for images only.
 Example: store images in uploads, but keep the default behavior for audio:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --image-storage uploads
 ```
 
 Example: always inline images:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir C:\finetune\openwebui\uploads \
   --image-storage inline
 ```
@@ -682,7 +686,7 @@ Default:
 Example: inline images up to 4 MB, store bigger images in uploads:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --media-storage auto \
   --image-inline-limit-mb 4
 ```
@@ -690,7 +694,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db \
 Example: inline all images in auto mode, regardless of size:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --media-storage auto \
   --image-inline-limit-mb 0
 ```
@@ -708,14 +712,14 @@ Overrides `--media-storage` for audio only.
 Example: store audio files in uploads, while images follow the default behavior:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --audio-storage uploads
 ```
 
 Example: inline audio files:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir C:\finetune\openwebui\uploads \
   --audio-storage inline
 ```
@@ -735,7 +739,7 @@ Default:
 Example: inline audio up to 5 MB, store bigger audio files in uploads:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --media-storage auto \
   --audio-inline-limit-mb 5
 ```
@@ -743,7 +747,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db \
 Example: inline all audio in auto mode, regardless of size:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --media-storage auto \
   --audio-inline-limit-mb 0
 ```
@@ -757,7 +761,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db \
 ### 1. Minimal conversion
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db
+python convert_openwebui_to_locallightchat_v4.py openwebui.db
 ```
 
 Creates a clean LocalLightChat database with the default name:
@@ -771,7 +775,7 @@ locallightchat_converted.sqlite
 ### 2. Minimal conversion with custom output path
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --out llc.sqlite
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --out llc.sqlite
 ```
 
 ---
@@ -779,7 +783,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db --out llc.sqlite
 ### 3. Convert and preserve OpenWebUI branches as LocalLightChat clones
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --with-branched
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --with-branched
 ```
 
 This is usually the best choice if your OpenWebUI chats contain regenerated answers or alternate paths.
@@ -789,14 +793,14 @@ This is usually the best choice if your OpenWebUI chats contain regenerated answ
 ### 4. Convert with media files from OpenWebUI uploads
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir /path/to/openwebui/uploads
 ```
 
 On Windows:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db ^
+python convert_openwebui_to_locallightchat_v4.py openwebui.db ^
   --uploads-dir C:\finetune\openwebui\uploads
 ```
 
@@ -805,7 +809,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db ^
 ### 5. Convert branches and store media in LocalLightChat uploads
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --with-branched \
   --uploads-dir /path/to/openwebui/uploads \
   --media-storage uploads
@@ -814,7 +818,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db \
 Windows:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db ^
+python convert_openwebui_to_locallightchat_v4.py openwebui.db ^
   --with-branched ^
   --uploads-dir C:\finetune\openwebui\uploads ^
   --media-storage uploads
@@ -825,7 +829,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db ^
 ### 6. Convert branches and embed all media into SQLite
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --with-branched \
   --uploads-dir /path/to/openwebui/uploads \
   --media-storage inline
@@ -838,7 +842,7 @@ This produces a more portable but potentially much larger SQLite database.
 ### 7. Use LocalLightChat-like automatic media behavior
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir /path/to/openwebui/uploads \
   --media-storage auto \
   --image-inline-limit-mb 8 \
@@ -852,7 +856,7 @@ This is also the default behavior, except that explicitly setting `--uploads-dir
 ### 8. Store images in uploads, but inline audio
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir /path/to/openwebui/uploads \
   --image-storage uploads \
   --audio-storage inline
@@ -863,7 +867,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db \
 ### 9. Use an existing LocalLightChat database as template
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --template locallightchat.sqlite \
   --out converted.sqlite
 ```
@@ -875,7 +879,7 @@ Good when your LocalLightChat database schema has changed and you want to preser
 ### 10. Merge into a copied template without deleting existing data
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --template locallightchat.sqlite \
   --out merged.sqlite \
   --keep-existing
@@ -893,7 +897,7 @@ A successful run prints a summary similar to:
 Done. Wrote locallightchat_converted.sqlite
 Mode: clean
 Admin login: admin/admin
-Converted: 2 folders, 5 chats
+Converted: 2 folders, 3 files, 5 chats
 ```
 
 With branched conversion, you may see a higher chat count because OpenWebUI branches become separate LocalLightChat cloned chats:
@@ -902,7 +906,7 @@ With branched conversion, you may see a higher chat count because OpenWebUI bran
 Done. Wrote locallightchat_converted.sqlite
 Mode: clean
 Admin login: admin/admin
-Converted: 2 folders, 7 chats
+Converted: 2 folders, 3 files, 7 chats
 ```
 
 If media files are missing, the converter may print warnings. This usually means OpenWebUI stored only a path in SQLite and the original file was not found on disk.
@@ -958,7 +962,7 @@ You are running an old version of the converter.
 The current version requires only one positional argument:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db
+python convert_openwebui_to_locallightchat_v4.py openwebui.db
 ```
 
 If your help output still shows this:
@@ -967,7 +971,7 @@ If your help output still shows this:
 openwebui_db locallightchat_template output_db
 ```
 
-replace the old script with the current `convert_openwebui_to_locallightchat_v3.py`.
+replace the old script with the current `convert_openwebui_to_locallightchat_v4.py`.
 
 ---
 
@@ -978,14 +982,14 @@ Most likely the converter could not find the original OpenWebUI upload files.
 Run with `--uploads-dir`:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir /path/to/openwebui/uploads
 ```
 
 Windows:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db ^
+python convert_openwebui_to_locallightchat_v4.py openwebui.db ^
   --uploads-dir C:\finetune\openwebui\uploads
 ```
 
@@ -1000,7 +1004,7 @@ You probably used inline media storage, or auto mode inlined many files.
 Use upload-backed media storage:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir /path/to/openwebui/uploads \
   --media-storage uploads
 ```
@@ -1018,7 +1022,7 @@ You probably used:
 Use LocalLightChat clone-style branch conversion instead:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db --with-branched
+python convert_openwebui_to_locallightchat_v4.py openwebui.db --with-branched
 ```
 
 ---
@@ -1028,7 +1032,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db --with-branched
 Use inline media storage:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir /path/to/openwebui/uploads \
   --media-storage inline
 ```
@@ -1042,7 +1046,7 @@ This embeds media directly in the SQLite database.
 Use upload-backed media storage:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --uploads-dir /path/to/openwebui/uploads \
   --media-storage uploads
 ```
@@ -1118,7 +1122,7 @@ openwebui_db
 For most real migrations, use:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db \
+python convert_openwebui_to_locallightchat_v4.py openwebui.db \
   --with-branched \
   --uploads-dir /path/to/openwebui/uploads \
   --media-storage auto
@@ -1127,7 +1131,7 @@ python convert_openwebui_to_locallightchat_v3.py openwebui.db \
 Windows:
 
 ```bash
-python convert_openwebui_to_locallightchat_v3.py openwebui.db ^
+python convert_openwebui_to_locallightchat_v4.py openwebui.db ^
   --with-branched ^
   --uploads-dir C:\finetune\openwebui\uploads ^
   --media-storage auto

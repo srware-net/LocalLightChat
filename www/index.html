@@ -5,7 +5,7 @@
 <meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/>
 <title>LocalLightChat</title>
 <link rel="icon" type="image/png" href="assets/img/favicon.png"/>
-<link href="assets/css/app.css?v=6" rel="stylesheet"/>
+<link href="assets/css/app.css?v=30" rel="stylesheet"/>
 </head>
 <body><div class="app-container"><div class="sidebar">
 <div class="sidebar-header">
@@ -29,7 +29,12 @@
 </div>
 <div class="sidebar-search" id="sidebar-search-wrap">
   <div class="sidebar-search-input">
-    <span class="sidebar-search-ico" aria-hidden="true">⌕</span>
+    <span class="sidebar-search-ico" aria-hidden="true">
+      <svg viewBox="0 0 24 24" role="img" focusable="false">
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-3.6-3.6"></path>
+      </svg>
+    </span>
     <input id="sidebar-search" type="text" placeholder="Search chats…" autocomplete="off" spellcheck="false" />
   </div>
   <button class="icon-btn sidebar-search-clear hidden" id="sidebar-search-clear" title="Clear">✕</button>
@@ -55,7 +60,7 @@
 </div>
 <div class="header-actions">
 <div class="header-compact-actions">
-<button aria-label="Chat Controls" class="icon-btn" id="controls-open" title="Chat Controls">⎚</button>
+<button aria-label="Chat Controls" class="icon-btn" id="controls-open" title="Chat Controls"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="6" y2="6"></line><line x1="4" x2="20" y1="12" y2="12"></line><line x1="4" x2="20" y1="18" y2="18"></line><circle cx="9" cy="6" r="1.55"></circle><circle cx="15" cy="12" r="1.55"></circle><circle cx="12" cy="18" r="1.55"></circle></svg></button>
 <div class="dropdown-wrap">
 <button aria-expanded="false" aria-haspopup="true" class="icon-btn" id="header-kebab" title="Menu">⋮</button>
 <div class="dropdown" id="header-kebab-menu" role="menu">
@@ -138,6 +143,16 @@
 </div>
 <!-- NEW: Attachment bar (chips) -->
 <div class="attachments" id="attachments"></div>
+<div class="runtime-activity hidden" id="runtime-activity" role="status" aria-live="polite">
+  <div class="runtime-activity-head">
+    <div class="runtime-activity-title" id="runtime-activity-title">Loading model</div>
+    <button class="runtime-activity-close" id="runtime-activity-close" type="button" title="Hide" aria-label="Hide activity">×</button>
+  </div>
+  <div class="runtime-activity-detail" id="runtime-activity-detail"></div>
+  <div class="runtime-activity-progress" id="runtime-activity-progress" aria-hidden="true">
+    <div class="runtime-activity-progress-fill" id="runtime-activity-progress-fill"></div>
+  </div>
+</div>
 <div class="input-wrapper">
 <!-- NEW: Attach button + menu + hidden file input -->
 <button aria-expanded="false" aria-haspopup="true" class="attach-btn" id="attach-btn" title="Add attachments">+</button>
@@ -157,6 +172,13 @@
 <div class="ai-text">
 <div class="ai-title">Add files</div>
 <div class="ai-sub">PDF, Images, TXT, Docs, Sheets…</div>
+</div>
+</button>
+<button class="attach-item" data-action="documents">
+<span class="ai-icon">🗂️</span>
+<div class="ai-text">
+<div class="ai-title">Documents…</div>
+<div class="ai-sub">Reuse, index or delete stored documents</div>
 </div>
 </button>
 <div class="attach-sep"></div>
@@ -190,9 +212,36 @@
     <span class="wt-check" aria-hidden="true"></span>
     <div class="wt-text">
       <div class="wt-title">Web search</div>
-      <div class="wt-sub">Search (Serper/Custom)</div>
+      <div class="wt-sub">Search</div>
     </div>
   </button>
+  <div class="attach-sep"></div>
+  <button class="webtools-item webtools-custom-trigger" data-action="rag-toggle-menu" type="button" aria-expanded="false">
+    <span class="wt-check" aria-hidden="true"></span>
+    <div class="wt-text">
+      <div class="wt-title">RAG</div>
+      <div class="wt-sub">Search local documents</div>
+    </div>
+    <span class="wt-arrow" aria-hidden="true">›</span>
+  </button>
+  <div class="webtools-custom-list hidden" id="webtools-rag-list" role="menu" aria-label="RAG mode">
+    <button class="webtools-custom-tool" data-action="rag-mode" data-mode="off" type="button">
+      <span class="wt-check" aria-hidden="true"></span>
+      <div class="wt-text"><div class="wt-title">Off</div><div class="wt-sub">Disable RAG for this chat</div></div>
+    </button>
+    <button class="webtools-custom-tool" data-action="rag-mode" data-mode="dense" type="button">
+      <span class="wt-check" aria-hidden="true"></span>
+      <div class="wt-text"><div class="wt-title">Fast</div><div class="wt-sub">Dense</div></div>
+    </button>
+    <button class="webtools-custom-tool" data-action="rag-mode" data-mode="hybrid" type="button">
+      <span class="wt-check" aria-hidden="true"></span>
+      <div class="wt-text"><div class="wt-title">Hybrid</div><div class="wt-sub">Dense + BM25 + RRF</div></div>
+    </button>
+    <button class="webtools-custom-tool" data-action="rag-mode" data-mode="precise" type="button">
+      <span class="wt-check" aria-hidden="true"></span>
+      <div class="wt-text"><div class="wt-title">Precise</div><div class="wt-sub">Dense + BM25 + Reranker</div></div>
+    </button>
+  </div>
   <div class="attach-sep"></div>
   <button class="webtools-item" data-action="image" type="button">
     <span class="wt-check" aria-hidden="true"></span>
@@ -202,13 +251,24 @@
     </div>
   </button>
   <div class="attach-sep"></div>
-  <button class="webtools-item" data-action="code-workspace" type="button">
+  <button class="webtools-item webtools-custom-trigger" data-action="code-workspace-toggle-menu" type="button" aria-expanded="false">
     <span class="wt-check" aria-hidden="true"></span>
     <div class="wt-text">
       <div class="wt-title">Code workspace</div>
-      <div class="wt-sub">Select a project workspace</div>
+      <div class="wt-sub">Off</div>
     </div>
+    <span class="wt-arrow" aria-hidden="true">›</span>
   </button>
+  <div class="webtools-custom-list hidden" id="webtools-workspace-list" role="menu" aria-label="Code workspace">
+    <button class="webtools-custom-tool" data-action="workspace-toggle" type="button">
+      <span class="wt-check" aria-hidden="true"></span>
+      <div class="wt-text"><div class="wt-title">On / off</div><div class="wt-sub">Enable workspace tools for this chat</div></div>
+    </button>
+    <button class="webtools-custom-tool" data-action="workspace-manager" type="button">
+      <span class="wt-check wt-check-blank" aria-hidden="true"></span>
+      <div class="wt-text"><div class="wt-title">Manager</div><div class="wt-sub">Manage, import, export and select workspaces</div></div>
+    </button>
+  </div>
   <div class="attach-sep"></div>
   <button class="webtools-item" data-action="document" type="button">
     <span class="wt-check" aria-hidden="true"></span>
@@ -227,6 +287,13 @@
     <span class="wt-arrow" aria-hidden="true">›</span>
   </button>
   <div class="webtools-custom-list hidden" id="webtools-custom-list" role="menu" aria-label="Custom tools"></div>
+  <div class="attach-sep"></div>
+  <button class="webtools-item webtools-custom-trigger" data-action="mcp-servers-toggle" type="button" aria-expanded="false">
+    <span class="wt-check" aria-hidden="true"></span>
+    <div class="wt-text"><div class="wt-title">MCP servers</div><div class="wt-sub">Enable remote MCP tools</div></div>
+    <span class="wt-arrow" aria-hidden="true">›</span>
+  </button>
+  <div class="webtools-custom-list hidden" id="webtools-mcp-list" role="menu" aria-label="MCP servers"></div>
 </div>
 <textarea class="input-textarea" placeholder="Send a Message" rows="1"></textarea>
 <button class="voice-btn hidden" id="voice-btn" disabled="" title="Voice" aria-label="Voice">
@@ -253,7 +320,7 @@
   <span class="tok-metrics">
     <span id="status-tokens-prompt" class="tok-chip" title="Prompt tokens (next request)">P 0</span>
     <span id="status-tokens-completion" class="tok-chip" title="Completion tokens (last response)">C 0</span>
-    <span id="status-tokens-total" class="tok-chip" title="Total tokens (last request)">T 0</span>
+    <span id="status-context-window" class="tok-chip" title="Maximum context window unavailable">CTX –</span>
   </span>
   <span id="status-cost">~$0.000</span>
   <span id="status-speed">0.0s • 0 tok/s</span>
@@ -287,6 +354,24 @@
 <div class="param-edit">
 <input id="param-temperature" inputmode="decimal" max="2" min="0" placeholder="e.g., 0.8" step="0.1" type="number"/>
 <div class="hint">Controls randomness: lower values are more focused and deterministic, higher values are more creative and varied.</div>
+</div>
+</div>
+<div class="param-row" data-name="reasoning_effort">
+<div class="param-label">Reasoning Effort</div>
+<div class="param-value"><span aria-pressed="false" class="status-chip" data-status-for="reasoning_effort" role="button" tabindex="0">Default</span></div>
+<div class="param-reset"><button class="reset-param-btn invisible" data-reset="reasoning_effort" disabled="">Reset</button></div>
+<div class="param-edit">
+<select id="param-reasoning_effort">
+<option value="">Choose level…</option>
+<option value="none">None</option>
+<option value="minimal">Minimal</option>
+<option value="low">Low</option>
+<option value="medium">Medium</option>
+<option value="high">High</option>
+<option value="xhigh">XHigh</option>
+<option value="max">Max</option>
+</select>
+<div class="hint">Reasoning/thinking compute. Supported levels depend on the selected model/provider. Default sends no override. OpenRouter is translated to its normalized reasoning.effort format.</div>
 </div>
 </div>
 <div class="param-row" data-name="dynatemp_range">
@@ -667,8 +752,10 @@
 <button aria-controls="tab-general" aria-selected="true" class="nav-item active" data-tab="general" role="tab">General</button>
 <button aria-controls="tab-web" aria-selected="false" class="nav-item" data-tab="web" role="tab">Web</button>
 <button aria-controls="tab-search" aria-selected="false" class="nav-item" data-tab="search" role="tab">Search</button>
+<button aria-controls="tab-rag" aria-selected="false" class="nav-item" data-tab="rag" role="tab">RAG</button>
 <button aria-controls="tab-image" aria-selected="false" class="nav-item" data-tab="image" role="tab">Image</button>
 <button aria-controls="tab-custom-tools" aria-selected="false" class="nav-item" data-tab="custom-tools" role="tab">Custom Tools</button>
+<button aria-controls="tab-mcp" aria-selected="false" class="nav-item" data-tab="mcp" role="tab">MCP</button>
 <button aria-controls="tab-voice" aria-selected="false" class="nav-item" data-tab="voice" role="tab">Voice</button>
 <button aria-controls="tab-connections" aria-selected="false" class="nav-item" data-tab="connections" role="tab">Connections</button>
 <button aria-controls="tab-pricing" aria-selected="false" class="nav-item" data-tab="pricing" role="tab">Pricing</button>
@@ -704,9 +791,9 @@
 
     <div class="form-field" style="max-width:520px; margin-bottom:14px;">
       <label for="setting-upload-hard-limit-mb">Upload hard limit (MB)</label>
-      <input id="setting-upload-hard-limit-mb" type="number" min="1" max="1024" step="1" placeholder="25" />
+      <input id="setting-upload-hard-limit-mb" type="number" min="1" max="1024" step="1" placeholder="50" />
       <div class="hint" style="margin-top:8px;">
-        Absolute server-side upload cap for normal attachments. Default: 25 MB. Voice dictation uses its own endpoint and is not affected.
+        Absolute server-side upload cap for normal attachments. Default: 50 MB. Voice dictation uses its own endpoint and is not affected.
       </div>
     </div>
 
@@ -726,12 +813,157 @@
       </div>
     </div>
 
+    <div class="settings-group-separator" aria-hidden="true"></div>
+
     <div class="form-field" style="max-width:520px; margin-bottom:14px;">
-      <label for="setting-tool-max-iters">Max tool-call iterations</label>
-      <input id="setting-tool-max-iters" type="number" min="1" max="50" step="1" placeholder="10" />
+      <label for="setting-tool-simple-max-iters">Simple tool-call rounds</label>
+      <input id="setting-tool-simple-max-iters" type="number" min="0" step="1" placeholder="20" />
       <div class="hint" style="margin-top:8px;">
-        How many tools the model may call in a row before the server aborts. Default: 10.
+        Separate budget for <code>web_search</code>, <code>web_read</code> and <code>image_generate</code>. Default: 20 rounds. <strong>0</strong> = unlimited.
       </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-tool-agentic-max-iters">Agentic tool-call rounds</label>
+      <input id="setting-tool-agentic-max-iters" type="number" min="0" step="1" placeholder="200" />
+      <div class="hint" style="margin-top:8px;">
+        Separate budget for code workspaces, documents, MCP and custom tools. Default: 200 rounds. <strong>0</strong> = unlimited. A round may contain several parallel tool calls.
+      </div>
+    </div>
+
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-agent-activity-mode">Agent activity storage</label>
+      <select id="setting-agent-activity-mode">
+        <option value="tail">Keep only the latest tokens</option>
+        <option value="full">Keep full activity</option>
+      </select>
+      <div class="hint" style="margin-top:8px;">
+        Controls how much completed agent activity is kept in chat history and JSON exports. <strong>Full</strong> can make the database and exports very large; live previews stay independently bounded.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-agent-activity-max-tokens">Agent activity max tokens</label>
+      <input id="setting-agent-activity-max-tokens" type="number" min="1" max="1000000" step="100" placeholder="1000" />
+      <div class="hint" style="margin-top:8px;">
+        Approximate persisted-history limit when "Keep only the latest tokens" is selected. Uses about 4 characters per token. Live agent previews keep a larger transient tail of about 8000 tokens. Default stored tail: 1000 tokens.
+      </div>
+    </div>
+
+    <div class="settings-group-separator" aria-hidden="true"></div>
+
+    <div style="max-width:520px; margin-bottom:12px;">
+      <h4 style="margin:0 0 6px;">Agent context compaction</h4>
+      <div class="hint">Personal runtime settings for long agent runs. Compaction is independent of MCP artifact externalization and works with Code Workspace, documents, MCP and custom tools.</div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-agent-compact-above-tokens">Compact above (context tokens)</label>
+      <input id="setting-agent-compact-above-tokens" type="number" min="0" max="10000000" step="1000" placeholder="100000" />
+      <div class="hint" style="margin-top:8px;">
+        Before each agent pass, llama.cpp uses its exact chat input-token count when available. Other APIs and older llama.cpp builds fall back to a UTF-8 payload bytes / 4 estimate. For llama.cpp, the effective trigger is also capped below the runtime <code>n_ctx</code> with output room reserved. Default: 100,000. <strong>0</strong> disables automatic compaction.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-agent-compact-keep-tool-rounds">Keep latest tool rounds raw</label>
+      <input id="setting-agent-compact-keep-tool-rounds" type="number" min="0" max="1000" step="1" placeholder="6" />
+      <div class="hint" style="margin-top:8px;">
+        Always preserve this many newest complete assistant → tool-result rounds without summarizing them. Default: 6. After a successful compaction, normal compaction waits for this many new complete tool rounds before becoming eligible again. The current user request and not-yet-consumed results are protected separately.
+      </div>
+    </div>
+
+    <div class="form-field llc-toggle-field" style="max-width:520px; margin-bottom:14px;">
+      <label class="llc-toggle-card" for="setting-agent-compact-emergency-enabled">
+        <span class="llc-toggle-copy">
+          <span class="llc-toggle-title">Emergency compaction</span>
+          <span class="llc-setting-help">Optional, default off. During the post-compaction cooldown, allow an early compact if estimated context reaches 120% of the configured threshold. Emergency compaction keeps at most the latest 4 tool rounds raw, or fewer when your normal raw-round setting is lower.</span>
+        </span>
+        <span class="llc-switch">
+          <input id="setting-agent-compact-emergency-enabled" type="checkbox" aria-label="Emergency compaction" />
+          <span class="llc-switch-track" aria-hidden="true"></span>
+        </span>
+      </label>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-agent-compact-model">Compaction model</label>
+      <select id="setting-agent-compact-model">
+        <option value="__current__">Current agent model</option>
+      </select>
+      <div class="hint" style="margin-top:8px;">
+        Default: use the model currently running the agent. Alternatively choose any model from your model list. A smaller-context model is supported through chunked checkpoint folding. The same Compaction model is also used to semantically compact raw tool evidence before a periodic supervisor review, with a separate evidence-preservation prompt. llama.cpp can expose real prompt-processing progress in Agent activity.
+      </div>
+    </div>
+
+    <div class="form-field llc-toggle-field" style="max-width:520px; margin-bottom:14px;">
+      <label class="llc-toggle-card" for="setting-agent-compact-reasoning-none">
+        <span class="llc-toggle-copy">
+          <span class="llc-toggle-title">Disable reasoning for compaction</span>
+          <span class="llc-setting-help">Default on. Runs compaction with Reasoning Effort set to <strong>None</strong>. This includes normal context compaction and supervisor tool-evidence compaction, which avoids local reasoning models spending excessive time thinking during summarization. Normal chat, agent and supervisor requests keep their own reasoning setting. Provider-specific formatting follows the same translation used by Chat Controls.</span>
+        </span>
+        <span class="llc-switch">
+          <input id="setting-agent-compact-reasoning-none" type="checkbox" aria-label="Disable reasoning for compaction" checked />
+          <span class="llc-switch-track" aria-hidden="true"></span>
+        </span>
+      </label>
+    </div>
+
+    <div class="settings-group-separator" aria-hidden="true"></div>
+
+    <div style="max-width:520px; margin-bottom:12px;">
+      <h4 style="margin:0 0 6px;">Agent supervisor</h4>
+      <div class="hint">Optional periodic review by a separate model during long tool-using runs. Before each review, the <strong>Compaction model</strong> above semantically condenses the complete raw tool executions with a dedicated evidence prompt. The supervisor then receives user/assistant text plus that evidence compact and injects its checkpoint into the working agent as a new internal <code>user</code> message.</div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-agent-supervisor-every-tool-calls">Review interval (completed tool calls)</label>
+      <input id="setting-agent-supervisor-every-tool-calls" type="number" min="0" max="1000000" step="1" placeholder="35" />
+      <div class="hint" style="margin-top:8px;">
+        Runs a supervisor review after approximately this many completed individual tool calls; parallel calls each count once. <strong>0</strong> disables the supervisor. Reviews are incremental: after the first checkpoint, only that checkpoint plus the new run segment is sent.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-agent-supervisor-model">Supervisor model</label>
+      <select id="setting-agent-supervisor-model">
+        <option value="__current__">Current agent model</option>
+      </select>
+      <div class="hint" style="margin-top:8px;">
+        Choose the stronger model that should periodically audit the working agent. Raw tool arguments/results are first semantically compacted by the configured <strong>Compaction model</strong> using a separate evidence-preservation prompt; oversized evidence is chunked/folded instead of head/tail-truncated. The supervisor receives only that compact, not the raw tool transcript.
+      </div>
+    </div>
+
+    <div class="settings-group-separator" aria-hidden="true"></div>
+
+    <div class="form-field llc-toggle-field" id="setting-pdf-memory-saving-field" style="max-width:520px; margin-bottom:14px;">
+      <label class="llc-toggle-card" for="setting-pdf-memory-saving">
+        <span class="llc-toggle-copy">
+          <span class="llc-toggle-title">Memory Saving PDF parsing</span>
+          <span class="llc-setting-help">Reduce peak RAM usage for PDFs. Parsing can be significantly slower.</span>
+        </span>
+        <span class="llc-switch">
+          <input id="setting-pdf-memory-saving" type="checkbox" aria-label="Memory Saving PDF parsing" />
+          <span class="llc-switch-track" aria-hidden="true"></span>
+        </span>
+      </label>
+    </div>
+
+    <div class="archive-maintenance" id="archive-maintenance">
+      <div class="archive-maintenance-copy">
+        <div class="archive-maintenance-title">Archive old root chats</div>
+        <div class="hint">Only folderless chats in the root are moved. Chats already organized in any folder are left untouched.</div>
+      </div>
+      <div class="archive-maintenance-controls">
+        <div class="archive-age-field">
+          <label for="archive-old-root-days">Older than</label>
+          <input id="archive-old-root-days" type="number" min="1" max="36500" step="1" value="30" inputmode="numeric" />
+          <span>days</span>
+        </div>
+        <button class="btn btn-primary" id="archive-old-root-btn" type="button">Move old folderless chats to archive</button>
+      </div>
+      <div class="archive-maintenance-status hint" id="archive-old-root-status" aria-live="polite"></div>
     </div>
   </div>
 </section>
@@ -765,7 +997,7 @@
 
 <div class="form-field" style="max-width:520px; margin-bottom:14px;">
   <label for="setting-web-fetch-max-chars">Max chars for URL extraction (fetch)</label>
-  <input id="setting-web-fetch-max-chars" type="number" min="0" step="1000" placeholder="20000" />
+  <input id="setting-web-fetch-max-chars" type="number" min="0" step="1000" placeholder="50000" />
   <div class="hint" style="margin-top:8px;">
     Limit for the regular link extractor (readability.php). <strong>0</strong> = unlimited.
   </div>
@@ -773,7 +1005,7 @@
 
 <div class="form-field" style="max-width:520px; margin-bottom:14px;">
   <label for="setting-web-tool-max-chars">Max chars for tool-call web_read</label>
-  <input id="setting-web-tool-max-chars" type="number" min="0" step="1000" placeholder="12000" />
+  <input id="setting-web-tool-max-chars" type="number" min="0" step="1000" placeholder="60000" />
   <div class="hint" style="margin-top:8px;">
     Hard limit for tool calling (web_read). Models may stay below it, but not above it (unless this is <strong>0</strong> = unlimited).
   </div>
@@ -814,7 +1046,8 @@
       <select id="setting-search-provider">
         <option value="serper">serper.dev (Google Search API)</option>
         <option value="brave">Brave Search API</option>
-        <option value="searchngx">SearchNGX (Instance API)</option>
+        <option value="exa">Exa.ai Search API</option>
+        <option value="searchngx">SearXNG (Instance API)</option>
         <option value="custom">Custom (Serper-like API)</option>
       </select>
       <div class="hint hidden" id="search-custom-hint" style="margin-top:8px;">
@@ -838,6 +1071,16 @@
         <input id="setting-brave-api-key" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="Brave Search API key" />
         <div class="hint" style="margin-top:8px;">
           Stored locally (server-side SQLite). Header: <code>X-Subscription-Token</code>.
+        </div>
+      </div>
+    </div>
+
+    <div id="search-exa-fields" class="hidden">
+      <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+        <label for="setting-exa-api-key">Exa API Key</label>
+        <input id="setting-exa-api-key" class="secret-input" type="text" autocomplete="off" spellcheck="false" placeholder="Exa API key" />
+        <div class="hint" style="margin-top:8px;">
+          Stored locally (server-side SQLite). Header: <code>Authorization: Bearer …</code>.
         </div>
       </div>
     </div>
@@ -881,11 +1124,11 @@
 
     <div id="search-searchngx-fields" class="hidden">
       <div class="form-field" style="max-width:520px; margin-bottom:14px;">
-        <label for="setting-searchngx-url">SearchNGX Base URL</label>
+        <label for="setting-searchngx-url">SearXNG Base URL</label>
         <input id="setting-searchngx-url" type="url" placeholder="https://searx.example.com" />
         <div class="hint" style="margin-top:8px;">
           We call <code>{base}/search</code> with <code>format=json</code>.
-          Important: in your SearchNGX instance, JSON output must be enabled (<code>search</code> → <code>formats</code> → <code>json</code>), otherwise no JSON will be returned.
+          Important: in your SearXNG instance, JSON output must be enabled (<code>search</code> → <code>formats</code> → <code>json</code>), otherwise no JSON will be returned.
         </div>
       </div>
 
@@ -895,7 +1138,7 @@
           <span>Allow local/private network instances (192.168/10.x)</span>
         </label>
         <div class="hint" style="margin-top:8px;">
-          Only if your SearchNGX instance runs on your LAN. Default stays off (SSRF protection).
+          Only if your SearXNG instance runs on your LAN. Default stays off (SSRF protection).
         </div>
       </div>
 
@@ -913,12 +1156,12 @@
       <div class="form-field">
         <label for="setting-search-gl">gl</label>
         <input id="setting-search-gl" type="text" placeholder="de" />
-        <div class="hint">Geo (e.g. de, us)</div>
+        <div class="hint">Geo/country (e.g. de, us, gb). Exa.ai requires a valid ISO country code.</div>
       </div>
       <div class="form-field">
         <label for="setting-search-hl">hl</label>
         <input id="setting-search-hl" type="text" placeholder="de" />
-        <div class="hint">Language (e.g. de, en)</div>
+        <div class="hint">Language (e.g. de, en). Exa.ai currently ignores hl.</div>
       </div>
       <div class="form-field">
         <label for="setting-search-num">num</label>
@@ -933,6 +1176,67 @@
   </div>
 
 </section>
+<!-- RAG -->
+<section class="tab-panel" data-panel="rag" id="tab-rag" role="tabpanel">
+  <div class="about-wrap">
+    <h3>RAG</h3>
+    <div class="hint" id="rag-superadmin-note" style="margin-top:8px; margin-bottom:14px;">
+      RAG infrastructure is configured globally by a superadmin. A configured server URL makes RAG available automatically.
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+        <input id="setting-rag-auto-enable" type="checkbox" />
+        <span>Activate RAG automatically</span>
+      </label>
+      <div class="hint" style="margin-top:8px;">
+        Enables <strong>RAG</strong> by default for chats that have no explicit RAG override. It only takes effect while a RAG server URL is configured.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-rag-url">RAG server URL</label>
+      <input id="setting-rag-url" type="url" placeholder="http://192.168.0.50:8787" autocomplete="off" spellcheck="false" />
+      <div class="hint" style="margin-top:8px;">
+        Base URL of <code>ragd</code>. LAN addresses are supported; no localhost assumption is built into LLC.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-rag-default-mode">Default retrieval mode</label>
+      <select id="setting-rag-default-mode">
+        <option value="dense">Fast — Dense</option>
+        <option value="hybrid">Hybrid — Dense + BM25 + RRF</option>
+        <option value="precise">Precise — Dense + BM25 + Reranker</option>
+      </select>
+      <div class="hint" style="margin-top:8px;">
+        Personal retrieval mode used by default. Each chat can override it under 🌐 → RAG.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-rag-top-k">Retrieved chunks (Top-K)</label>
+      <input id="setting-rag-top-k" type="number" min="1" max="64" step="1" placeholder="8" />
+      <div class="hint" style="margin-top:8px;">
+        Number of passages requested from <code>ragd</code> for each RAG-enabled prompt. Default: 8.
+      </div>
+    </div>
+
+    <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+      <label for="setting-rag-timeout-sec">Request timeout (seconds)</label>
+      <input id="setting-rag-timeout-sec" type="number" min="5" max="3600" step="1" placeholder="180" />
+      <div class="hint" style="margin-top:8px;">
+        Timeout for indexing and retrieval calls from PHP to <code>ragd</code>. Default: 180 seconds.
+      </div>
+    </div>
+
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <button class="btn" id="setting-rag-test" type="button">Test connection</button>
+      <span class="hint" id="setting-rag-status"></span>
+    </div>
+  </div>
+</section>
+
 <!-- Image -->
 <section class="tab-panel" data-panel="image" id="tab-image" role="tabpanel">
   <div class="about-wrap">
@@ -961,6 +1265,12 @@
 
   </div>
 
+    <div class="image-mode-tabs" id="image-settings-mode-tabs" role="tablist" aria-label="Image settings mode">
+      <button id="setting-image-mode-generation" class="image-mode-tab active" type="button" role="tab" aria-selected="true" aria-controls="image-generation-settings" tabindex="0">Generation</button>
+      <button id="setting-image-mode-editing" class="image-mode-tab" type="button" role="tab" aria-selected="false" aria-controls="image-editing-settings" tabindex="-1">Editing</button>
+    </div>
+
+    <div id="image-generation-settings" class="image-mode-panel" role="tabpanel" aria-labelledby="setting-image-mode-generation">
     <div class="form-field" style="max-width:520px; margin-bottom:14px;">
       <label for="setting-image-provider">Provider</label>
       <select id="setting-image-provider">
@@ -991,19 +1301,18 @@
       </div>
     </div>
 
-    <div class="form-grid" style="max-width:520px;">
-      <div class="form-field">
-        <label for="setting-image-model">Model</label>
-        <select id="setting-image-model">
-          <option value="gpt-image-2">gpt-image-2 (latest / highest quality)</option>
-          <option value="gpt-image-1.5">gpt-image-1.5</option>
-          <option value="chatgpt-image-latest">chatgpt-image-latest</option>
-          <option value="gpt-image-1">gpt-image-1</option>
-          <option value="gpt-image-1-mini">gpt-image-1-mini (faster/cheaper)</option>
-          <option value="dall-e-3">dall-e-3</option>
-          <option value="dall-e-2">dall-e-2</option>
+    <div class="form-field" style="max-width:720px; margin-bottom:14px;">
+      <label for="setting-image-model">OpenAI image model</label>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <select id="setting-image-model" style="flex:1; min-width:0;">
+          <option value="gpt-image-2">gpt-image-2</option>
         </select>
+        <button id="setting-image-models-refresh" class="btn secondary" type="button">Refresh</button>
       </div>
+      <div id="setting-image-models-status" class="hint" style="margin-top:8px;">Image models are loaded from <code>/models</code>. OpenAI returns basic model metadata only, so image-capable IDs are selected by naming pattern.</div>
+    </div>
+
+    <div class="form-grid" style="max-width:520px;">
       <div class="form-field">
         <label for="setting-image-size">Default size</label>
         <select id="setting-image-size">
@@ -1143,6 +1452,20 @@
 </div>
 
 <div id="image-comfyui-fields" class="hidden">
+  <div class="form-field" style="max-width:720px; margin-bottom:14px;">
+    <label for="setting-image-comfyui-profile">ComfyUI profile / model</label>
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <select id="setting-image-comfyui-profile" style="width:100%; min-width:0;"></select>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button class="btn secondary" type="button" id="setting-image-comfyui-profile-new">New</button>
+        <button class="btn btn-ghost" type="button" id="setting-image-comfyui-profile-duplicate">Duplicate</button>
+        <button class="btn btn-ghost" type="button" id="setting-image-comfyui-profile-rename">Rename</button>
+        <button class="btn btn-ghost" type="button" id="setting-image-comfyui-profile-delete">Delete</button>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:8px;">Each profile stores its own server URL, workflow, bindings and defaults. Switching profiles changes the active ComfyUI model/workflow without overwriting the others.</div>
+  </div>
+
   <div class="form-field" style="max-width:520px; margin-bottom:14px;">
     <label for="setting-image-comfyui-url">ComfyUI server URL</label>
     <input id="setting-image-comfyui-url" type="url" placeholder="http://192.168.0.1:8188" />
@@ -1215,38 +1538,209 @@
   </div>
   </div>
 
+</div>
+
+<div id="image-editing-settings" class="image-mode-panel hidden" role="tabpanel" aria-labelledby="setting-image-mode-editing">
+  <div class="hint" style="margin-bottom:14px; max-width:760px;">Image editing is currently implemented for <strong>ComfyUI</strong> only. The <code>image_edit</code> tool becomes available to the AI only when a valid edit profile is configured here.</div>
+
+  <div class="form-field" style="max-width:720px; margin-bottom:14px;">
+    <label for="setting-image-edit-comfyui-profile">ComfyUI edit profile / workflow</label>
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <select id="setting-image-edit-comfyui-profile" style="width:100%; min-width:0;"></select>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button class="btn secondary" type="button" id="setting-image-edit-comfyui-profile-new">New</button>
+        <button class="btn btn-ghost" type="button" id="setting-image-edit-comfyui-profile-duplicate">Duplicate</button>
+        <button class="btn btn-ghost" type="button" id="setting-image-edit-comfyui-profile-rename">Rename</button>
+        <button class="btn btn-ghost" type="button" id="setting-image-edit-comfyui-profile-delete">Delete</button>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:8px;">Keep edit workflows separate from generation. Each profile stores its own server URL, workflow, bindings and defaults.</div>
+  </div>
+
+  <div class="form-field" style="max-width:520px; margin-bottom:14px;">
+    <label for="setting-image-edit-comfyui-url">ComfyUI server URL</label>
+    <input id="setting-image-edit-comfyui-url" type="url" placeholder="http://192.168.0.1:8188" />
+  </div>
+
+  <div class="form-field" style="max-width:720px; margin-bottom:14px;">
+    <label for="setting-image-edit-comfyui-workflow">Workflow JSON (Edit Template)</label>
+    <textarea id="setting-image-edit-comfyui-workflow" rows="10" spellcheck="false" placeholder="Paste your ComfyUI image-edit workflow JSON here..."></textarea>
+    <div class="hint" style="margin-top:8px;">Paste the exported API workflow for an edit pipeline such as Qwen 2.1 Edit or Flux2 Edit.</div>
+  </div>
+
+  <div class="form-field" style="max-width:720px; margin-bottom:14px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+      <label for="setting-image-edit-comfyui-bindings" style="margin:0;">Bindings JSON</label>
+      <button class="btn btn-ghost" type="button" id="setting-image-edit-comfyui-autodetect">Auto-detect</button>
+    </div>
+    <textarea id="setting-image-edit-comfyui-bindings" rows="8" spellcheck="false" placeholder='[{"param":"input_image","selector":{"class_type":"LoadImage"},"path":"inputs.image","cast":"string"}]'></textarea>
+    <div class="hint" style="margin-top:8px;">Auto-detect tries to find prompt, input-image, steps, guidance, width/height, batch, negative prompt and Flux-style megapixel scaling.</div>
+  </div>
+
+  <div class="form-grid" style="max-width:720px;">
+    <div class="form-field">
+      <label for="setting-image-edit-comfyui-seed">Default seed</label>
+      <input id="setting-image-edit-comfyui-seed" type="number" placeholder="-1" />
+      <div class="hint">-1 = random</div>
+    </div>
+    <div class="form-field">
+      <label for="setting-image-edit-comfyui-steps">Default steps</label>
+      <input id="setting-image-edit-comfyui-steps" type="number" placeholder="20" />
+    </div>
+    <div class="form-field">
+      <label for="setting-image-edit-comfyui-guidance">Default guidance</label>
+      <input id="setting-image-edit-comfyui-guidance" type="number" step="0.1" placeholder="3.5" />
+    </div>
+  </div>
+
+  <div class="form-grid" style="max-width:720px; margin-top:14px;">
+    <div class="form-field">
+      <label for="setting-image-edit-comfyui-width">Default width</label>
+      <input id="setting-image-edit-comfyui-width" type="number" placeholder="1024" />
+    </div>
+    <div class="form-field">
+      <label for="setting-image-edit-comfyui-height">Default height</label>
+      <input id="setting-image-edit-comfyui-height" type="number" placeholder="1024" />
+    </div>
+    <div class="form-field">
+      <label for="setting-image-edit-comfyui-batch">Default batch size</label>
+      <input id="setting-image-edit-comfyui-batch" type="number" placeholder="1" />
+    </div>
+  </div>
+
+  <div class="form-grid" style="max-width:720px; margin-top:14px;">
+    <div class="form-field">
+      <label for="setting-image-edit-comfyui-megapixels">Default megapixels</label>
+      <input id="setting-image-edit-comfyui-megapixels" type="number" step="0.1" placeholder="1" />
+      <div class="hint">Used by Flux-style edit workflows that scale the source image to a total pixel budget.</div>
+    </div>
+    <div class="form-field">
+      <label for="setting-image-edit-comfyui-timeout">Max wait (seconds)</label>
+      <input id="setting-image-edit-comfyui-timeout" type="number" placeholder="900" />
+    </div>
+  </div>
+
+  <div class="form-field" style="max-width:720px; margin-top:14px;">
+    <label style="display:flex; align-items:center; gap:10px; user-select:none;">
+      <input id="setting-image-edit-comfyui-apply-defaults" type="checkbox" />
+      <span>Defaults override workflow values</span>
+    </label>
+    <div class="hint" style="margin-top:8px;">Off: keep the workflow values unless the user explicitly overrides them. On: inject this profile's defaults into the workflow.</div>
+  </div>
+</div>
 </section>
 
 
 <!-- Custom Tools -->
 <section class="tab-panel" data-panel="custom-tools" id="tab-custom-tools" role="tabpanel">
-  <div class="about-wrap">
-    <h3>Custom Tools</h3>
-    <div class="hint" style="margin-top:8px; margin-bottom:14px;">
-      Define OpenAI-compatible function tools. They appear under the 🌐 menu and can be enabled per chat.
+  <div class="panel-header custom-tools-panel-header">
+    <div>
+      <h3>Custom Tools</h3>
+      <p class="muted">Create OpenAI-compatible function tools backed by HTTP endpoints, without editing JSON for the common cases.</p>
     </div>
-    <div class="form-field" style="max-width:760px; margin-bottom:14px;">
-      <label style="display:flex; align-items:center; gap:10px; user-select:none;">
-        <input id="setting-custom-tools-auto-enable" type="checkbox" />
-        <span>Activate custom tools automatically</span>
-      </label>
-      <div class="hint" style="margin-top:8px;">
-        When enabled, new chats start with all configured custom tools active. Each chat can still override this from the 🌐 menu.
-      </div>
-    </div>
-    <div class="form-field" style="max-width:760px; margin-bottom:14px;">
-      <label for="setting-custom-tools-json">Tools JSON</label>
-      <textarea id="setting-custom-tools-json" rows="16" spellcheck="false" placeholder='[{"name":"lookup_customer","description":"Look up a customer by email","endpoint":"https://api.example.com/customer","method":"POST","headers":{"Authorization":"Bearer ..."},"parameters":{"type":"object","properties":{"email":{"type":"string"}},"required":["email"]}}]'></textarea>
-      <div class="hint" style="margin-top:8px;">
-        Required: <code>name</code>, <code>description</code>, <code>endpoint</code>, <code>parameters</code>. Optional: <code>method</code> GET/POST, <code>headers</code>, <code>allow_private</code>, <code>timeout_sec</code>, <code>body_template</code>. POST sends <code>{"arguments": ...}</code> unless a body template is set.
-      </div>
-    </div>
-    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-      <button class="btn secondary" type="button" id="setting-custom-tools-format">Format JSON</button>
-      <button class="btn primary" type="button" id="setting-custom-tools-save">Save custom tools</button>
-      <span class="hint" id="setting-custom-tools-status"></span>
+    <div class="custom-tools-panel-actions">
+      <button class="btn btn-primary" type="button" id="custom-tool-add-btn">+ New Custom Tool</button>
     </div>
   </div>
+
+  <div class="custom-tools-default-card">
+    <label class="custom-tools-check-row" for="setting-custom-tools-auto-enable">
+      <input id="setting-custom-tools-auto-enable" type="checkbox" />
+      <span>
+        <strong>Activate configured custom tools in new chats</strong>
+        <small>Each chat can still override the active tools from the globe menu.</small>
+      </span>
+    </label>
+  </div>
+
+  <div class="empty-state hidden" id="custom-tools-empty">
+    <div class="empty-title">No custom tools yet</div>
+    <div class="empty-sub">Add a function name, HTTP endpoint and parameters. JSON editing is optional.</div>
+  </div>
+  <div aria-live="polite" class="conn-list custom-tools-list" id="custom-tools-list"></div>
+  <div class="custom-tools-page-status hint" id="setting-custom-tools-status" aria-live="polite"></div>
+
+  <details class="custom-tools-raw-details">
+    <summary>Advanced: raw configuration</summary>
+    <div class="form-field custom-tools-raw-editor">
+      <label for="setting-custom-tools-json">Tools JSON</label>
+      <textarea id="setting-custom-tools-json" rows="14" spellcheck="false"></textarea>
+      <div class="hint">Expert view of the same tool list. Changes are applied automatically when the editor loses focus.</div>
+      <div class="custom-tools-raw-actions">
+        <button class="btn btn-ghost" type="button" id="setting-custom-tools-format">Format</button>
+      </div>
+    </div>
+  </details>
+</section>
+
+<!-- MCP -->
+<section class="tab-panel" data-panel="mcp" id="tab-mcp" role="tabpanel">
+  <div class="panel-header mcp-panel-header">
+    <div>
+      <h3>MCP Servers</h3>
+      <p class="muted">Connect Streamable-HTTP MCP servers and expose their tools to the existing agentic tool loop.</p>
+    </div>
+    <div class="mcp-panel-actions">
+      <button class="btn btn-ghost" type="button" id="setting-mcp-servers-test">Test all</button>
+      <button class="btn btn-primary" type="button" id="mcp-add-btn">+ New MCP Server</button>
+    </div>
+  </div>
+
+  <div class="mcp-default-card">
+    <label class="mcp-check-row" for="setting-mcp-servers-auto-enable">
+      <input id="setting-mcp-servers-auto-enable" type="checkbox" />
+      <span>
+        <strong>Activate configured MCP servers in new chats</strong>
+        <small>Each chat can still override the active servers from the globe menu.</small>
+      </span>
+    </label>
+  </div>
+
+  <div class="mcp-default-card mcp-context-card">
+    <div class="form-field">
+      <label for="setting-mcp-context-mode">MCP tool result context</label>
+      <select id="setting-mcp-context-mode">
+        <option value="full">Full results</option>
+        <option value="externalize" selected>Externalize large results</option>
+      </select>
+      <div class="hint">Only MCP results are affected. Up to “Externalize above”, results stay inline and no artifact is created. Above that threshold, the complete result is stored as an artifact. Up to “Full first pass up to”, the model still receives the complete result once; only later rounds use the bounded preview. Results above the full-pass ceiling use the artifact preview immediately. Token size is estimated conservatively because connected models may use different tokenizers, especially for logs, JSON, paths, numbers, and repeated prompt characters.</div>
+    </div>
+    <div class="mcp-context-grid" id="mcp-context-limits">
+      <div class="form-field">
+        <label for="setting-mcp-externalize-above">Externalize above</label>
+        <div class="input-with-unit"><input id="setting-mcp-externalize-above" type="number" min="500" max="200000" step="100" /><span>tokens</span></div>
+      </div>
+      <div class="form-field">
+        <label for="setting-mcp-preview-max">Maximum preview</label>
+        <div class="input-with-unit"><input id="setting-mcp-preview-max" type="number" min="200" max="50000" step="100" /><span>tokens</span></div>
+      </div>
+      <div class="form-field">
+        <label for="setting-mcp-full-pass-max">Full first pass up to</label>
+        <div class="input-with-unit"><input id="setting-mcp-full-pass-max" type="number" min="0" max="200000" step="100" /><span>tokens</span></div>
+        <div class="hint">0 sends every externalized result as a preview immediately.</div>
+      </div>
+    </div>
+    <div class="hint" id="setting-mcp-context-status" aria-live="polite"></div>
+  </div>
+
+  <div class="empty-state hidden" id="mcp-empty">
+    <div class="empty-title">No MCP servers yet</div>
+    <div class="empty-sub">Add a server URL, authentication and optional headers. No JSON editing is required.</div>
+  </div>
+  <div aria-live="polite" class="conn-list mcp-list" id="mcp-list"></div>
+  <div class="mcp-page-status hint" id="setting-mcp-servers-status" aria-live="polite"></div>
+
+  <details class="mcp-raw-details">
+    <summary>Advanced: raw server configuration</summary>
+    <div class="form-field mcp-raw-editor">
+      <label for="setting-mcp-servers-json">Servers JSON</label>
+      <textarea id="setting-mcp-servers-json" rows="12" spellcheck="false"></textarea>
+      <div class="hint">This is an expert view of the same server list. Changes are saved automatically when the editor loses focus.</div>
+      <div class="mcp-raw-actions">
+        <button class="btn btn-ghost" type="button" id="setting-mcp-servers-format">Format</button>
+      </div>
+    </div>
+  </details>
 </section>
 
 <!-- Voice -->
@@ -1513,7 +2007,7 @@
 <p>LocalLightChat - the high performance chat frontend.</p>
 <p><strong>Project URL:</strong> <a href="https://www.locallightai.com/llc/" target="_blank" rel="noopener">https://www.locallightai.com/llc/</a></p>
 <ul class="about-list">
-<li><strong>Version:</strong> 0.7.0</li>
+<li><strong>Version:</strong> 1.0.0</li>
 <li><strong>License:</strong> Apache License 2.0</li>
 <li><strong>Third-Party Notices:</strong> <a href="https://www.locallightai.com/llc/3rdparty.txt" target="_blank" rel="noopener">Tools & Licenses</a></li>
 <li><strong>Author:</strong> <a href="https://www.srware.net/en/" target="_blank" rel="noopener">SRWare</a></li>
@@ -1525,6 +2019,243 @@
 </div>
 </div>
 </div>
+
+<!-- Custom Tool Editor -->
+<div class="mcp-editor-modal custom-tool-editor-modal hidden" id="custom-tool-editor-modal" role="dialog" aria-modal="true" aria-labelledby="custom-tool-editor-title">
+  <div class="mcp-editor-backdrop" data-custom-tool-close="1"></div>
+  <div class="mcp-editor-panel custom-tool-editor-panel" role="document">
+    <div class="mcp-editor-head">
+      <div>
+        <div class="mcp-editor-title" id="custom-tool-editor-title">Add Custom Tool</div>
+        <div class="mcp-editor-sub">Define the model-facing function and the HTTP request used when the function is called.</div>
+      </div>
+      <button class="icon-btn" id="custom-tool-editor-close" type="button" aria-label="Close">✕</button>
+    </div>
+
+    <div class="mcp-editor-body custom-tool-editor-body">
+      <input id="custom-tool-edit-index" type="hidden" value="-1" />
+
+      <div class="custom-tool-section-label">Function</div>
+      <div class="mcp-form-grid">
+        <div class="form-field">
+          <label for="custom-tool-edit-title">Title</label>
+          <input id="custom-tool-edit-title" type="text" placeholder="Lookup Customer" autocomplete="off" />
+          <div class="hint">Human-readable label shown in Settings.</div>
+        </div>
+        <div class="form-field">
+          <label for="custom-tool-edit-name">Function name <span class="required-mark">*</span></label>
+          <input id="custom-tool-edit-name" type="text" placeholder="lookup_customer" autocomplete="off" spellcheck="false" />
+          <div class="hint">Letters, numbers and underscores; must start with a letter or underscore.</div>
+        </div>
+      </div>
+      <div class="form-field">
+        <label for="custom-tool-edit-description">Description <span class="required-mark">*</span></label>
+        <textarea id="custom-tool-edit-description" rows="3" placeholder="Look up a customer by email address"></textarea>
+        <div class="hint">The model uses this description to decide when to call the tool.</div>
+      </div>
+
+      <div class="custom-tool-http-block">
+        <div class="mcp-section-head">
+          <div>
+            <strong>HTTP request</strong>
+            <div class="hint">Where the tool call is sent.</div>
+          </div>
+        </div>
+        <div class="custom-tool-request-grid">
+          <div class="form-field custom-tool-method-field">
+            <label for="custom-tool-edit-method">Method</label>
+            <select id="custom-tool-edit-method">
+              <option value="POST">POST</option>
+              <option value="GET">GET</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="custom-tool-edit-endpoint">Endpoint <span class="required-mark">*</span></label>
+            <input id="custom-tool-edit-endpoint" type="url" placeholder="https://api.example.com/customer" autocomplete="off" spellcheck="false" />
+          </div>
+        </div>
+        <label class="custom-tools-check-row custom-tool-private-row" for="custom-tool-edit-allow-private">
+          <input id="custom-tool-edit-allow-private" type="checkbox" />
+          <span>
+            <strong>Allow private/local network addresses</strong>
+            <small>Required for localhost, LAN and other non-public endpoints.</small>
+          </span>
+        </label>
+      </div>
+
+      <div class="mcp-headers-block custom-tool-headers-block">
+        <div class="mcp-section-head">
+          <div>
+            <strong>Headers</strong>
+            <div class="hint">Optional HTTP headers such as Authorization or API keys.</div>
+          </div>
+          <button class="btn btn-ghost" id="custom-tool-header-add" type="button">+ Add header</button>
+        </div>
+        <div class="mcp-header-list" id="custom-tool-header-list"></div>
+        <div class="hint mcp-no-headers" id="custom-tool-no-headers">No custom headers configured.</div>
+      </div>
+
+      <div class="custom-tool-parameters-block">
+        <div class="mcp-section-head">
+          <div>
+            <strong>Parameters</strong>
+            <div class="hint">Arguments the model can pass to this function.</div>
+          </div>
+          <button class="btn btn-ghost" id="custom-tool-parameter-add" type="button">+ Add parameter</button>
+        </div>
+        <div class="custom-tool-parameter-head" aria-hidden="true">
+          <span>Name</span><span>Type</span><span>Description</span><span>Required</span><span></span>
+        </div>
+        <div class="custom-tool-parameter-list" id="custom-tool-parameter-list"></div>
+        <div class="hint" id="custom-tool-no-parameters">No parameters configured. The function can still be called without arguments.</div>
+      </div>
+
+      <div class="mcp-option-card custom-tool-body-card" id="custom-tool-body-card">
+        <div class="form-field">
+          <label for="custom-tool-edit-body-mode">POST request body</label>
+          <select id="custom-tool-edit-body-mode">
+            <option value="default">Send arguments automatically</option>
+            <option value="template">Custom body template</option>
+          </select>
+          <div class="hint" id="custom-tool-body-mode-hint">Default sends <code>{"arguments": ...}</code> as JSON.</div>
+        </div>
+        <div class="form-field hidden" id="custom-tool-body-template-wrap">
+          <label for="custom-tool-edit-body-template">Body template</label>
+          <textarea id="custom-tool-edit-body-template" rows="5" spellcheck="false" placeholder='{"email":"{{email}}"}'></textarea>
+          <div class="hint">Use <code>{{parameter_name}}</code> placeholders. If the rendered template is not valid JSON, it is sent inside a fallback JSON envelope.</div>
+        </div>
+      </div>
+
+      <details class="mcp-advanced-details">
+        <summary>Advanced options</summary>
+        <div class="mcp-form-grid mcp-advanced-grid">
+          <div class="form-field">
+            <label for="custom-tool-edit-id">Tool ID</label>
+            <input id="custom-tool-edit-id" type="text" placeholder="lookup_customer" autocomplete="off" spellcheck="false" />
+            <div class="hint">Stable internal identifier. Normally the same as the function name.</div>
+          </div>
+          <div class="form-field">
+            <label for="custom-tool-edit-timeout">Timeout in seconds</label>
+            <input id="custom-tool-edit-timeout" type="number" min="1" max="120" step="1" value="30" />
+            <div class="hint">Allowed range: 1–120 seconds.</div>
+          </div>
+        </div>
+      </details>
+
+      <div class="conn-test-result hidden" id="custom-tool-editor-result" aria-live="polite"></div>
+    </div>
+
+    <div class="mcp-editor-footer">
+      <button class="btn btn-ghost" id="custom-tool-editor-cancel" type="button">Cancel</button>
+      <div class="mcp-editor-footer-right">
+        <button class="btn btn-primary" id="custom-tool-editor-apply" type="button">Add tool</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MCP Server Editor -->
+<div class="mcp-editor-modal hidden" id="mcp-editor-modal" role="dialog" aria-modal="true" aria-labelledby="mcp-editor-title">
+  <div class="mcp-editor-backdrop" data-mcp-close="1"></div>
+  <div class="mcp-editor-panel" role="document">
+    <div class="mcp-editor-head">
+      <div>
+        <div class="mcp-editor-title" id="mcp-editor-title">Add MCP Server</div>
+        <div class="mcp-editor-sub">The connection is tested through the PHP backend, exactly as it will be used by the agent.</div>
+      </div>
+      <button class="icon-btn" id="mcp-editor-close" type="button" aria-label="Close">✕</button>
+    </div>
+
+    <div class="mcp-editor-body">
+      <input id="mcp-edit-index" type="hidden" value="-1" />
+
+      <div class="mcp-form-grid">
+        <div class="form-field">
+          <label for="mcp-edit-name">Name <span class="required-mark">*</span></label>
+          <input id="mcp-edit-name" type="text" placeholder="Local MCP Server" autocomplete="off" />
+        </div>
+        <div class="form-field">
+          <label for="mcp-edit-id">Server ID <span class="required-mark">*</span></label>
+          <input id="mcp-edit-id" type="text" placeholder="local" autocomplete="off" spellcheck="false" />
+          <div class="hint">Stable identifier used in tool names, e.g. <code>mcp_local__fs_read</code>.</div>
+        </div>
+      </div>
+
+      <div class="form-field">
+        <label for="mcp-edit-url">Server URL <span class="required-mark">*</span></label>
+        <input id="mcp-edit-url" type="url" placeholder="http://127.0.0.1:8765/mcp" autocomplete="off" spellcheck="false" />
+      </div>
+
+      <div class="form-field">
+        <label for="mcp-edit-description">Description</label>
+        <textarea id="mcp-edit-description" rows="2" placeholder="Filesystem and terminal tools on the local workstation"></textarea>
+      </div>
+
+      <div class="mcp-option-card">
+        <label class="mcp-check-row" for="mcp-edit-auth-enabled">
+          <input id="mcp-edit-auth-enabled" type="checkbox" checked />
+          <span><strong>Authorization</strong><small>Send a Bearer token with every request.</small></span>
+        </label>
+        <div class="form-field hidden" id="mcp-edit-token-wrap">
+          <label for="mcp-edit-token">Bearer token</label>
+          <div class="mcp-secret-row">
+            <input id="mcp-edit-token" class="secret-input" type="password" autocomplete="new-password" spellcheck="false" value="change-me" placeholder="change-me" />
+            <button class="btn btn-ghost" id="mcp-token-reveal" type="button">Show</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="mcp-option-card">
+        <label class="mcp-check-row" for="mcp-edit-allow-private">
+          <input id="mcp-edit-allow-private" type="checkbox" />
+          <span><strong>Allow private or local network address</strong><small>Required for localhost, LAN addresses and Docker host bridges.</small></span>
+        </label>
+      </div>
+
+      <div class="mcp-headers-block">
+        <div class="mcp-section-head">
+          <div>
+            <strong>Custom headers</strong>
+            <div class="hint">Optional HTTP headers in addition to Authorization.</div>
+          </div>
+          <button class="btn btn-ghost" id="mcp-header-add" type="button">+ Add header</button>
+        </div>
+        <div class="mcp-header-list" id="mcp-header-list"></div>
+        <div class="hint mcp-no-headers" id="mcp-no-headers">No custom headers configured.</div>
+      </div>
+
+      <details class="mcp-advanced-details">
+        <summary>Advanced options</summary>
+        <div class="mcp-form-grid mcp-advanced-grid">
+          <div class="form-field">
+            <label for="mcp-edit-protocol">Protocol version</label>
+            <input id="mcp-edit-protocol" type="text" value="2025-11-25" spellcheck="false" />
+          </div>
+          <div class="form-field">
+            <label for="mcp-edit-timeout">HTTP/tool wait timeout in seconds</label>
+            <input id="mcp-edit-timeout" type="number" min="0" step="1" value="3600" />
+            <div class="hint" style="margin-top:8px;">Default: 3600 seconds. <strong>0</strong> = unlimited. The MCP process timeout may still be set separately by the tool argument or MCP server configuration.</div>
+          </div>
+          <div class="form-field">
+            <label for="mcp-edit-max-response">Maximum response size (MB)</label>
+            <input id="mcp-edit-max-response" type="number" min="1" max="64" step="1" value="32" />
+          </div>
+        </div>
+      </details>
+
+      <div class="conn-test-result hidden" id="mcp-editor-result" aria-live="polite"></div>
+    </div>
+
+    <div class="mcp-editor-footer">
+      <button class="btn btn-ghost" id="mcp-editor-cancel" type="button">Cancel</button>
+      <div class="mcp-editor-footer-right">
+        <button class="btn btn-ghost" id="mcp-editor-test" type="button">Test connection</button>
+        <button class="btn btn-primary" id="mcp-editor-save" type="button">Save server</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Login Modal -->
 <div id="login-modal" class="login-modal hidden" role="dialog" aria-modal="true">
   <div class="login-card">
@@ -1536,10 +2267,10 @@
       <input id="login-password" class="login-input secret-input" name="login_secret" type="text" autocomplete="off" spellcheck="false" />
       <div class="login-error" aria-live="polite"></div>
       <button class="btn primary login-btn" type="submit">Sign in</button>
-      <div class="login-hint">Default: <b>admin</b> / <b>admin</b></div>
+      <div class="login-hint" id="login-hint">Default: <b>admin</b> / <b>admin</b></div>
     </form>
   </div>
 </div>
 
-<script defer="" src="assets/js/app.js?v=6" type="module"></script></body>
+<script defer="" src="assets/js/app.js?v=73" type="module"></script></body>
 </html>

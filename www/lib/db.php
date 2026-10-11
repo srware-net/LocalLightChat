@@ -57,14 +57,54 @@ function llc_db(): PDO {
   $pdo->exec('PRAGMA foreign_keys = ON;');
   llc_migrate($pdo);
 
-  // Optional: seed preconfigured connections on first start (or if still empty).
-  if ($isNewDbFile || llc_start_with_preconfigured_connections()) {
-    llc_seed_preconfigured_connections($pdo);
+  // Optional bootstrap defaults. They are applied only while a brand-new
+  // LLC database is being initialized, never on later starts.
+  if ($isNewDbFile && llc_start_with_preconfigured_connections()) {
+    llc_initialize_preconfigured_connections($pdo);
   }
 
   return $pdo;
 }
 
+/**
+ * SQLite can still return SQLITE_BUSY / SQLITE_LOCKED in a narrow race even
+ * with busy_timeout enabled (for example when another request commits while a
+ * long-running request is about to persist tool output). Critical writes may
+ * use this bounded retry instead of dropping data on the first transient lock.
+ */
+function llc_db_is_busy_error(Throwable $e): bool {
+  if ($e instanceof PDOException) {
+    $info = $e->errorInfo ?? null;
+    if (is_array($info) && isset($info[1])) {
+      $driverCode = (int)$info[1];
+      if ($driverCode === 5 || $driverCode === 6) return true; // SQLITE_BUSY / SQLITE_LOCKED
+    }
+  }
+
+  $msg = strtolower($e->getMessage());
+  return str_contains($msg, 'database is locked')
+    || str_contains($msg, 'database table is locked')
+    || str_contains($msg, 'database is busy');
+}
+
+function llc_db_retry_busy(callable $operation, int $maxWaitMs = 5000) {
+  $maxWaitMs = max(0, $maxWaitMs);
+  $deadline = microtime(true) + ($maxWaitMs / 1000);
+  $sleepUs = 50000;
+
+  while (true) {
+    try {
+      return $operation();
+    } catch (Throwable $e) {
+      if (!llc_db_is_busy_error($e) || microtime(true) >= $deadline) throw $e;
+
+      $remainingUs = (int)max(0, ($deadline - microtime(true)) * 1000000);
+      if ($remainingUs <= 0) throw $e;
+      usleep(min($sleepUs, $remainingUs));
+      $sleepUs = min(500000, (int)ceil($sleepUs * 1.7));
+    }
+  }
+}
 
 
 function llc_start_with_preconfigured_connections(): bool {
@@ -72,29 +112,121 @@ function llc_start_with_preconfigured_connections(): bool {
   return ((int)LLC_START_WITH_PRECONFIGURED_CONNECTIONS !== 0);
 }
 
-function llc_seed_preconfigured_connections(PDO $db): void {
+function llc_preconfigured_rag_url(): string {
+  $url = defined('LLC_PRECONFIGURED_RAG_URL') ? trim((string)LLC_PRECONFIGURED_RAG_URL) : 'http://127.0.0.1:8787';
+  return rtrim($url, '/');
+}
+
+function llc_preconfigured_mcp_server(): array {
+  $url = defined('LLC_PRECONFIGURED_MCP_URL') ? trim((string)LLC_PRECONFIGURED_MCP_URL) : 'http://127.0.0.1:8765/mcp';
+  $token = defined('LLC_PRECONFIGURED_MCP_TOKEN') ? (string)LLC_PRECONFIGURED_MCP_TOKEN : 'change-me';
+  return [
+    'id' => 'local_mcp',
+    'name' => 'Local Agent',
+    'description' => 'Local agent runtime (MCP)',
+    'url' => $url,
+    'token' => $token,
+    'headers' => [],
+    'allow_private' => true,
+    'timeout_sec' => 3600,
+    'max_response_bytes' => 32 * 1024 * 1024,
+    'follow_exec_jobs' => true,
+    'protocol_version' => '2025-11-25',
+  ];
+}
+
+function llc_preconfigured_mcp_json(): string {
+  $json = json_encode([llc_preconfigured_mcp_server()], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+  return is_string($json) ? $json : '[]';
+}
+
+function llc_initial_admin_password(): string {
+  if (!defined('LLC_INITIAL_ADMIN_PASSWORD')) return '';
+  return (string)LLC_INITIAL_ADMIN_PASSWORD;
+}
+
+function llc_require_initial_admin_password(): bool {
+  if (!defined('LLC_REQUIRE_INITIAL_ADMIN_PASSWORD')) return false;
+  return (bool)LLC_REQUIRE_INITIAL_ADMIN_PASSWORD;
+}
+
+function llc_initial_admin_password_is_configured(): bool {
+  return llc_initial_admin_password() !== '';
+}
+
+function llc_user_count(PDO $db): int {
+  try {
+    return (int)($db->query("SELECT COUNT(*) FROM users")->fetchColumn() ?? 0);
+  } catch (Throwable $_) {
+    return 0;
+  }
+}
+
+function llc_initial_admin_setup_required(PDO $db): bool {
+  return llc_user_count($db) === 0
+    && llc_require_initial_admin_password()
+    && !llc_initial_admin_password_is_configured();
+}
+
+/**
+ * Create the built-in first superadmin only while the installation has no
+ * users at all. This deliberately does not resurrect u_admin after it has
+ * been deleted from an already-initialized installation.
+ *
+ * Returns true when at least one user exists after the call.
+ */
+function llc_ensure_initial_admin(PDO $db, int $now): bool {
+  if (llc_user_count($db) > 0) return true;
+
+  $configured = llc_initial_admin_password();
+  if ($configured === '' && llc_require_initial_admin_password()) {
+    return false;
+  }
+
+  $password = ($configured !== '') ? $configured : 'admin';
+  $st = $db->prepare("INSERT OR IGNORE INTO users (id,username,email,pass_hash,role,created_at,updated_at) VALUES (?,?,?,?,?,?,?)");
+  $st->execute(['u_admin', 'admin', null, password_hash($password, PASSWORD_DEFAULT), 'superadmin', $now, $now]);
+
+  return llc_user_count($db) > 0;
+}
+
+function llc_initialize_preconfigured_connections(PDO $db): void {
   if (!llc_start_with_preconfigured_connections()) return;
 
-  // Only seed when the shared table is empty.
+  $now = time();
+
+  // Shared API connection templates for a fresh installation.
   try {
     $cnt = (int)($db->query("SELECT COUNT(*) FROM global_connections")->fetchColumn() ?? 0);
-    if ($cnt > 0) return;
-  } catch (Throwable $_) {
-    return;
-  }
+    if ($cnt === 0) {
+      $rows = [
+        ['gc_openai', 'OpenAI', 'OpenAI', 'https://api.openai.com/v1'],
+        ['gc_openrouter', 'OpenRouter', 'OR', 'https://openrouter.ai/api/v1'],
+      ];
+      $ins = $db->prepare("INSERT OR IGNORE INTO global_connections (id,label,prefix,base_url,api_key,headers,notes,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)");
+      foreach ($rows as $r) {
+        // Templates ship without API keys and therefore stay disabled.
+        $ins->execute([(string)$r[0], (string)$r[1], (string)$r[2], (string)$r[3], '', null, '', 0, $now, $now]);
+      }
+    }
+  } catch (Throwable $_) { /* keep bootstrap pieces independent */ }
 
-  $now = time();
-  $rows = [
-    ['gc_openai', 'OpenAI', 'OpenAI', 'https://api.openai.com/v1'],
-    ['gc_openrouter', 'OpenRouter', 'OR', 'https://openrouter.ai/api/v1'],
-  ];
+  // Initial local RAG endpoint. After initialization this is ordinary user/admin
+  // configuration and is never recreated or overwritten by this flag.
+  try {
+    $ragUrl = llc_preconfigured_rag_url();
+    if ($ragUrl !== '') llc_set_global_setting($db, 'rag_url', $ragUrl);
+  } catch (Throwable $_) { /* noop */ }
 
-  $ins = $db->prepare("INSERT OR IGNORE INTO global_connections (id,label,prefix,base_url,api_key,headers,notes,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)");
-  foreach ($rows as $r) {
-    // These rows are templates only. They intentionally ship without API keys,
-    // so they must not be active until an admin adds credentials and enables them.
-    $ins->execute([(string)$r[0], (string)$r[1], (string)$r[2], (string)$r[3], '', null, '', 0, $now, $now]);
-  }
+  // Initial Local Agent MCP connection for the users created during first setup.
+  try {
+    $users = $db->query("SELECT id FROM users ORDER BY created_at ASC")->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($users as $row) {
+      $uid = (string)($row['id'] ?? '');
+      if ($uid === '') continue;
+      llc_set_setting($db, $uid, 'mcp_servers_json', llc_preconfigured_mcp_json());
+    }
+  } catch (Throwable $_) { /* noop */ }
 }
 
 function llc_migrate(PDO $db): void {
@@ -124,10 +256,11 @@ function llc_migrate(PDO $db): void {
     );
   ");
 
-  // Ensure default admin/admin exists (first user)
-  // IMPORTANT: The first built-in admin is also the superadmin.
-  $st = $db->prepare("INSERT OR IGNORE INTO users (id,username,email,pass_hash,role,created_at,updated_at) VALUES (?,?,?,?,?,?,?)");
-  $st->execute([$adminId, 'admin', null, password_hash('admin', PASSWORD_DEFAULT), 'superadmin', $now, $now]);
+  // Create the first built-in superadmin only while there are no users at all.
+  // With LLC_REQUIRE_INITIAL_ADMIN_PASSWORD enabled and no configured initial
+  // password, the installation intentionally remains without a login account
+  // until config.php is updated and the next request reruns this migration.
+  $hasAnyUser = llc_ensure_initial_admin($db, $now);
 
   // --- Core tables (new installs) ---
   $db->exec("
@@ -147,12 +280,33 @@ function llc_migrate(PDO $db): void {
     );
   ");
 
+  // Durable MCP transport bindings. The gateway keeps a child MCP process alive
+  // independently from an individual chat_stream HTTP request; persisting its
+  // session ID here lets a later request for the same chat reattach to that
+  // process (and therefore to live PTY/terminal sessions owned by it).
+  $db->exec("
+    CREATE TABLE IF NOT EXISTS mcp_sessions (
+      user_id TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      server_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      protocol_version TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(user_id, chat_id, server_id),
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE
+    );
+  " );
+  $db->exec("CREATE INDEX IF NOT EXISTS idx_mcp_sessions_updated ON mcp_sessions(updated_at);");
+
   $db->exec("
     CREATE TABLE IF NOT EXISTS folders (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       parent_id TEXT NULL,
       name TEXT NOT NULL,
+      is_archive INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -220,10 +374,75 @@ function llc_migrate(PDO $db): void {
       stored_name TEXT NOT NULL,
       mime TEXT NOT NULL,
       size INTEGER NOT NULL,
+      library_visible INTEGER NOT NULL DEFAULT 0,
+      rag_document_id TEXT NOT NULL DEFAULT '',
+      rag_job_id TEXT NOT NULL DEFAULT '',
+      rag_state TEXT NOT NULL DEFAULT '',
+      rag_chunks INTEGER NOT NULL DEFAULT 0,
+      rag_embedding_model TEXT NOT NULL DEFAULT '',
+      rag_error TEXT NOT NULL DEFAULT '',
+      rag_indexed_at INTEGER NULL,
       created_at INTEGER NOT NULL,
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
   ");
+
+  // Complete MCP tool outputs externalized from the active model context.
+  // Keep the CREATE statement and the upgrade path together: CREATE TABLE IF NOT EXISTS
+  // does not add new columns to an already existing table.
+  $db->exec("
+    CREATE TABLE IF NOT EXISTS artifacts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      run_id TEXT NOT NULL DEFAULT '',
+      tool_call_id TEXT NOT NULL,
+      source_server TEXT NOT NULL DEFAULT '',
+      source_tool TEXT NOT NULL DEFAULT '',
+      mime_type TEXT NOT NULL DEFAULT 'application/json',
+      storage_path TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      line_count INTEGER NOT NULL DEFAULT 0,
+      token_count_original INTEGER NOT NULL DEFAULT 0,
+      token_count_preview INTEGER NOT NULL DEFAULT 0,
+      tokenizer_source TEXT NOT NULL DEFAULT 'estimated_chars_div_4',
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE
+    );
+  ");
+
+  // Artifact schema migration for installations that already received an earlier
+  // prototype table. Add every non-key column defensively so upgrades can skip
+  // any number of intermediate releases.
+  $colsArtifacts = array_column($db->query("PRAGMA table_info(artifacts)")->fetchAll(), 'name');
+  $artifactColumnMigrations = [
+    'user_id' => "TEXT NOT NULL DEFAULT ''",
+    'chat_id' => "TEXT NOT NULL DEFAULT ''",
+    'run_id' => "TEXT NOT NULL DEFAULT ''",
+    'tool_call_id' => "TEXT NOT NULL DEFAULT ''",
+    'source_server' => "TEXT NOT NULL DEFAULT ''",
+    'source_tool' => "TEXT NOT NULL DEFAULT ''",
+    'mime_type' => "TEXT NOT NULL DEFAULT 'application/json'",
+    'storage_path' => "TEXT NOT NULL DEFAULT ''",
+    'size_bytes' => "INTEGER NOT NULL DEFAULT 0",
+    'line_count' => "INTEGER NOT NULL DEFAULT 0",
+    'token_count_original' => "INTEGER NOT NULL DEFAULT 0",
+    'token_count_preview' => "INTEGER NOT NULL DEFAULT 0",
+    'tokenizer_source' => "TEXT NOT NULL DEFAULT 'estimated_chars_div_4'",
+    'created_at' => "INTEGER NOT NULL DEFAULT 0",
+  ];
+  foreach ($artifactColumnMigrations as $column => $definition) {
+    if (!in_array($column, $colsArtifacts, true)) {
+      $db->exec('ALTER TABLE artifacts ADD COLUMN "' . $column . '" ' . $definition);
+      $colsArtifacts[] = $column;
+    }
+  }
+
+  // Create the index only after old artifact tables have received the columns
+  // referenced by it.
+  $db->exec("CREATE INDEX IF NOT EXISTS idx_artifacts_user_chat ON artifacts(user_id, chat_id, created_at);");
+  $db->exec("CREATE INDEX IF NOT EXISTS idx_artifacts_user_chat_run ON artifacts(user_id, chat_id, run_id);");
 
   // Chat templates (per user). Payload stores system prompt, advanced params and message history.
   $db->exec("
@@ -320,40 +539,83 @@ function llc_migrate(PDO $db): void {
   if (!empty($colsFiles) && !in_array('user_id', $colsFiles, true)) {
     $db->exec("ALTER TABLE files ADD COLUMN user_id TEXT NOT NULL DEFAULT '$adminId'");
     $db->exec("UPDATE files SET user_id='$adminId' WHERE user_id IS NULL OR user_id=''");
+    $colsFiles[] = 'user_id';
   }
+  // `files` is also the document library. New document uploads opt in via
+  // library_visible=1; old rows deliberately remain 0 so upgrades do not
+  // scrape/migrate historic chat attachments into the new library.
+  $fileColumnMigrations = [
+    'library_visible' => "INTEGER NOT NULL DEFAULT 0",
+    'rag_document_id' => "TEXT NOT NULL DEFAULT ''",
+    'rag_job_id' => "TEXT NOT NULL DEFAULT ''",
+    'rag_state' => "TEXT NOT NULL DEFAULT ''",
+    'rag_chunks' => "INTEGER NOT NULL DEFAULT 0",
+    'rag_embedding_model' => "TEXT NOT NULL DEFAULT ''",
+    'rag_error' => "TEXT NOT NULL DEFAULT ''",
+    'rag_indexed_at' => "INTEGER NULL",
+  ];
+  foreach ($fileColumnMigrations as $column => $definition) {
+    if (!in_array($column, $colsFiles, true)) {
+      $db->exec('ALTER TABLE files ADD COLUMN "' . $column . '" ' . $definition);
+      $colsFiles[] = $column;
+    }
+  }
+  $db->exec("CREATE INDEX IF NOT EXISTS idx_files_user_library_created ON files(user_id, library_visible, created_at DESC);");
+
+  // Special per-user Archive folder. Older installations do not have the
+  // marker column yet, so add it lazily and keep the invariant that a user can
+  // have at most one designated Archive folder.
+  $colsFolders = array_column($db->query("PRAGMA table_info(folders)")->fetchAll(), 'name');
+  if (!empty($colsFolders) && !in_array('is_archive', $colsFolders, true)) {
+    $db->exec("ALTER TABLE folders ADD COLUMN is_archive INTEGER NOT NULL DEFAULT 0");
+    $colsFolders[] = 'is_archive';
+  }
+  $db->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_one_archive_per_user ON folders(user_id) WHERE is_archive=1;");
 
   // Settings table migration: old schema was (k PRIMARY KEY, v)
   $colsSettings = array_column($db->query("PRAGMA table_info(settings)")->fetchAll(), 'name');
   if (!in_array('user_id', $colsSettings, true)) {
-    $db->exec("ALTER TABLE settings RENAME TO settings_old");
-    $db->exec("
-      CREATE TABLE settings (
-        user_id TEXT NOT NULL,
-        k TEXT NOT NULL,
-        v TEXT NOT NULL,
-        PRIMARY KEY(user_id, k),
-        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-      );
-    ");
-    $st = $db->prepare("INSERT INTO settings (user_id,k,v) SELECT ?, k, v FROM settings_old");
-    $st->execute([$adminId]);
-    $db->exec("DROP TABLE settings_old");
+    // An intentionally blocked first setup has no user to own legacy settings
+    // yet. Leave the old table untouched and complete this migration after the
+    // operator configures the initial password and reloads.
+    if ($hasAnyUser) {
+      $db->exec("ALTER TABLE settings RENAME TO settings_old");
+      $db->exec("
+        CREATE TABLE settings (
+          user_id TEXT NOT NULL,
+          k TEXT NOT NULL,
+          v TEXT NOT NULL,
+          PRIMARY KEY(user_id, k),
+          FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+      ");
+      $st = $db->prepare("INSERT INTO settings (user_id,k,v) SELECT ?, k, v FROM settings_old");
+      $st->execute([$adminId]);
+      $db->exec("DROP TABLE settings_old");
+    }
   }
 
-  // Per-user settings defaults (admin gets seeded; other users can be added later)
-  llc_ensure_default_settings($db, $adminId);
+  // Per-user settings defaults. If initial setup is deliberately blocked, do
+  // not try to write settings for a non-existent u_admin (foreign-key error).
+  if ($hasAnyUser) {
+    $stAdmin = $db->prepare("SELECT id FROM users WHERE id=? LIMIT 1");
+    $stAdmin->execute([$adminId]);
+    if ($stAdmin->fetch()) llc_ensure_default_settings($db, $adminId);
+  }
 
   // Ensure shared global settings exist (seed from the oldest superadmin on first run / upgrade).
-  llc_ensure_default_global_settings($db);
+  if ($hasAnyUser) llc_ensure_default_global_settings($db);
 
-  // Ensure we always have at least one superadmin in older DBs.
-  // If none exists, promote the built-in admin (u_admin).
-  try {
-    $cntSA = (int)$db->query("SELECT COUNT(*) AS c FROM users WHERE role='superadmin'")->fetch()['c'];
-    if ($cntSA <= 0) {
-      $db->exec("UPDATE users SET role='superadmin', updated_at=" . time() . " WHERE id='" . $adminId . "'");
-    }
-  } catch (Throwable $_) { /* noop */ }
+  // Ensure we always have at least one superadmin in older DBs when the
+  // built-in admin still exists. Do not recreate a deleted u_admin.
+  if ($hasAnyUser) {
+    try {
+      $cntSA = (int)$db->query("SELECT COUNT(*) AS c FROM users WHERE role='superadmin'")->fetch()['c'];
+      if ($cntSA <= 0) {
+        $db->exec("UPDATE users SET role='superadmin', updated_at=" . time() . " WHERE id='" . $adminId . "'");
+      }
+    } catch (Throwable $_) { /* noop */ }
+  }
 }
 
 function llc_get_global_setting(PDO $db, string $k): ?string {
@@ -383,23 +645,33 @@ function llc_ensure_default_global_settings(PDO $db, string $seedFromUserId = ''
   // These keys are considered "global" when users inherit Search/Image.
   $globalKeys = [
     // Search
-    'search_provider','serper_api_key','brave_api_key','search_custom_url','search_custom_news_url','search_custom_allow_private','search_custom_api_key',
+    'search_provider','serper_api_key','brave_api_key','exa_api_key','search_custom_url','search_custom_news_url','search_custom_allow_private','search_custom_api_key',
     'searchngx_url','searchngx_allow_private','searchngx_api_key','search_gl','search_hl','search_num',
     // Image (provider + defaults + ComfyUI)
     'image_provider','image_base_url','image_api_key','image_model','image_size','image_quality','image_background','image_output_format',
     'image_openrouter_base_url','image_openrouter_api_key','image_openrouter_model',
     'image_comfyui_url','image_comfyui_workflow_json','image_comfyui_bindings_json','image_comfyui_seed','image_comfyui_steps','image_comfyui_guidance',
     'image_comfyui_width','image_comfyui_height','image_comfyui_batch','image_comfyui_timeout_sec','image_comfyui_apply_defaults',
+    'image_comfyui_profiles_json','image_comfyui_profile_id',
     // Voice (provider + key + TTS defaults)
     'voice_api_key','voice_tts_provider','voice_tts_voice','voice_tts_model',
     // Web (tool security + limits)
     'web_allow_private','web_fetch_max_chars','web_tool_max_chars',
     // General (server limits)
-    'tool_max_iters'
+    'tool_max_iters','tool_simple_max_iters','tool_agentic_max_iters','agent_activity_mode','agent_activity_max_tokens',
+    // RAG (shared local retrieval infrastructure)
+    'rag_url','rag_top_k','rag_timeout_sec'
   ];
 
   $hardDefaults = [
-    'tool_max_iters' => '10',
+    'tool_max_iters' => '20',
+    'tool_simple_max_iters' => '20',
+    'tool_agentic_max_iters' => '200',
+    'agent_activity_mode' => 'tail',
+    'agent_activity_max_tokens' => '1000',
+    'rag_url' => '',
+    'rag_top_k' => '8',
+    'rag_timeout_sec' => '180',
   ];
 
   foreach ($globalKeys as $k) {
@@ -476,22 +748,37 @@ function llc_ensure_default_settings(PDO $db, string $userId): void {
   if (llc_get_setting($db, $userId, 'selected_model') === null) llc_set_setting($db, $userId, 'selected_model', '');
   if (llc_get_setting($db, $userId, 'selected_connection_id') === null) llc_set_setting($db, $userId, 'selected_connection_id', '');
   if (llc_get_setting($db, $userId, 'system_prompt') === null) llc_set_setting($db, $userId, 'system_prompt', '');
+  // Personal default for RAG retrieval. Infrastructure remains global; the
+  // retrieval mode is a user preference and can be overridden per chat.
+  if (llc_get_setting($db, $userId, 'rag_default_mode') === null) llc_set_setting($db, $userId, 'rag_default_mode', 'hybrid');
+  if (llc_get_setting($db, $userId, 'rag_auto_enable') === null) llc_set_setting($db, $userId, 'rag_auto_enable', '0');
 
   // Web tools
   if (llc_get_setting($db, $userId, 'web_auto_enable') === null) llc_set_setting($db, $userId, 'web_auto_enable', '0');
   if (llc_get_setting($db, $userId, 'web_search_auto_enable') === null) llc_set_setting($db, $userId, 'web_search_auto_enable', '0');
-  if (llc_get_setting($db, $userId, 'web_prefer_attachments') === null) llc_set_setting($db, $userId, 'web_prefer_attachments', '1');
+  if (llc_get_setting($db, $userId, 'web_prefer_attachments') === null) llc_set_setting($db, $userId, 'web_prefer_attachments', '0');
   if (llc_get_setting($db, $userId, 'web_allow_private') === null) llc_set_setting($db, $userId, 'web_allow_private', '0');
 
   // Web extraction limits
   // 0 = unlimited
-  if (llc_get_setting($db, $userId, 'web_fetch_max_chars') === null) llc_set_setting($db, $userId, 'web_fetch_max_chars', '20000');
-  if (llc_get_setting($db, $userId, 'web_tool_max_chars') === null) llc_set_setting($db, $userId, 'web_tool_max_chars', '12000');
+  if (llc_get_setting($db, $userId, 'web_fetch_max_chars') === null) llc_set_setting($db, $userId, 'web_fetch_max_chars', '50000');
+  if (llc_get_setting($db, $userId, 'web_tool_max_chars') === null) llc_set_setting($db, $userId, 'web_tool_max_chars', '60000');
+
+  // External MCP servers (Streamable HTTP)
+  if (llc_get_setting($db, $userId, 'mcp_servers_json') === null) {
+    llc_set_setting($db, $userId, 'mcp_servers_json', '[]');
+  }
+  if (llc_get_setting($db, $userId, 'mcp_servers_auto_enable') === null) llc_set_setting($db, $userId, 'mcp_servers_auto_enable', '0');
+  if (llc_get_setting($db, $userId, 'mcp_context_mode') === null) llc_set_setting($db, $userId, 'mcp_context_mode', 'externalize');
+  if (llc_get_setting($db, $userId, 'mcp_externalize_above_tokens') === null) llc_set_setting($db, $userId, 'mcp_externalize_above_tokens', '6000');
+  if (llc_get_setting($db, $userId, 'mcp_preview_max_tokens') === null) llc_set_setting($db, $userId, 'mcp_preview_max_tokens', '2500');
+  if (llc_get_setting($db, $userId, 'mcp_full_first_pass_max_tokens') === null) llc_set_setting($db, $userId, 'mcp_full_first_pass_max_tokens', '32000');
 
   // Search provider config
   if (llc_get_setting($db, $userId, 'search_provider') === null) llc_set_setting($db, $userId, 'search_provider', 'serper');
   if (llc_get_setting($db, $userId, 'serper_api_key') === null) llc_set_setting($db, $userId, 'serper_api_key', '');
   if (llc_get_setting($db, $userId, 'brave_api_key') === null) llc_set_setting($db, $userId, 'brave_api_key', '');
+  if (llc_get_setting($db, $userId, 'exa_api_key') === null) llc_set_setting($db, $userId, 'exa_api_key', '');
   if (llc_get_setting($db, $userId, 'search_custom_url') === null) llc_set_setting($db, $userId, 'search_custom_url', '');
   if (llc_get_setting($db, $userId, 'search_custom_news_url') === null) llc_set_setting($db, $userId, 'search_custom_news_url', '');
   if (llc_get_setting($db, $userId, 'search_custom_allow_private') === null) llc_set_setting($db, $userId, 'search_custom_allow_private', '0');
@@ -535,6 +822,9 @@ function llc_ensure_default_settings(PDO $db, string $userId): void {
   if (llc_get_setting($db, $userId, 'image_comfyui_batch') === null) llc_set_setting($db, $userId, 'image_comfyui_batch', '1');
   if (llc_get_setting($db, $userId, 'image_comfyui_timeout_sec') === null) llc_set_setting($db, $userId, 'image_comfyui_timeout_sec', '900');
   if (llc_get_setting($db, $userId, 'image_comfyui_apply_defaults') === null) llc_set_setting($db, $userId, 'image_comfyui_apply_defaults', '0');
+  // Multiple ComfyUI workflow/model profiles. Empty keeps the legacy single-profile settings active.
+  if (llc_get_setting($db, $userId, 'image_comfyui_profiles_json') === null) llc_set_setting($db, $userId, 'image_comfyui_profiles_json', '[]');
+  if (llc_get_setting($db, $userId, 'image_comfyui_profile_id') === null) llc_set_setting($db, $userId, 'image_comfyui_profile_id', '');
 
   // Voice (OpenAI Transcribe/Realtime)
   if (llc_get_setting($db, $userId, 'voice_api_key') === null) llc_set_setting($db, $userId, 'voice_api_key', '');

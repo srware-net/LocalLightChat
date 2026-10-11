@@ -1,0 +1,78 @@
+{
+  "server": {
+    "address": "127.0.0.1",
+    "port": 8765,
+    "endpoint": "/mcp",
+    "maximum_request_bytes": 1048576
+  },
+  "authentication": {
+    "bearer_token": "change-me"
+  },
+  "cors": {
+    "enabled": true,
+    "allowed_origins": []
+  },
+  "filesystem": {
+    "enabled": true,
+    "workspace_root": "workspace",
+    "allow_delete": true
+  },
+  "processes": {
+    "enabled": true,
+    "allow_process_exec": true,
+    "allow_shell_exec": true,
+    "mirror_output_to_console": true,
+    "console_output_mode": "prefixed",
+    "default_timeout_ms": 0,
+    "maximum_timeout_ms": 0,
+    "default_idle_timeout_ms": 0,
+    "maximum_idle_timeout_ms": 0,
+    "termination_grace_ms": 2000,
+    "detach_from_terminal": true,
+    "maximum_output_bytes": 4194304,
+    "allow_process_start": true,
+    "allow_shell_start": true,
+    "default_wait_ms": 3000,
+    "maximum_wait_ms": 60000,
+    "maximum_tracked_jobs": 512,
+    "max_output_chars": 0,
+    "detect_interactive_prompt_loops": true,
+    "interactive_prompt_repeat_limit": 12,
+    "interactive_prompt_window_ms": 2000,
+    "interactive_prompt_max_chars": 80
+  },
+  "terminal": {
+    "enabled": true,
+    "maximum_sessions": 16,
+    "maximum_output_bytes": 4194304,
+    "maximum_read_bytes": 6144,
+    "maximum_observation_bytes": 6144,
+    "observation_quiet_ms": 500,
+    "observation_default_wait_ms": 3000,
+    "maximum_scrollback_lines": 2000,
+    "maximum_write_bytes": 65536,
+    "default_columns": 120,
+    "default_rows": 40,
+    "maximum_read_wait_ms": 60000,
+    "termination_grace_ms": 2000,
+    "log_output": true,
+    "log_input": false,
+    "mirror_output_to_console": true,
+    "mirror_input_to_console": true,
+    "console_output_mode": "prefixed"
+  },
+  "desktop": {
+    "enabled": true,
+    "maximum_image_bytes": 16777216,
+    "features": {
+      "window_management": true,
+      "screen_capture": true,
+      "input": true
+    }
+  },
+  "logging": {
+    "file": "mcp-server.log",
+    "log_process_commands": true,
+    "log_process_output": true
+  }
+}

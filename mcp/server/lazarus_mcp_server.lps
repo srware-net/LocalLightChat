@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <ProjectSession>
+    <PathDelim Value="\"/>
+    <Version Value="12"/>
+    <BuildModes Active="Default"/>
+    <Units>
+      <Unit>
+        <Filename Value="lazarus_mcp_server.lpr"/>
+        <IsPartOfProject Value="True"/>
+        <EditorIndex Value="-1"/>
+        <CursorPos X="6" Y="17"/>
+        <UsageCount Value="200"/>
+      </Unit>
+      <Unit>
+        <Filename Value="ProcessRunner.pas"/>
+        <EditorIndex Value="-1"/>
+        <TopLine Value="48"/>
+        <CursorPos Y="48"/>
+        <UsageCount Value="100"/>
+      </Unit>
+      <Unit>
+        <Filename Value="McpDispatcher.pas"/>
+        <EditorIndex Value="-1"/>
+        <TopLine Value="80"/>
+        <CursorPos X="9" Y="120"/>
+        <UsageCount Value="100"/>
+      </Unit>
+      <Unit>
+        <Filename Value="McpHttpServer.pas"/>
+        <EditorIndex Value="-1"/>
+        <CursorPos X="48" Y="12"/>
+        <UsageCount Value="100"/>
+      </Unit>
+      <Unit>
+        <Filename Value="ServerConfig.pas"/>
+        <EditorIndex Value="-1"/>
+        <TopLine Value="11"/>
+        <CursorPos X="24" Y="37"/>
+        <UsageCount Value="98"/>
+      </Unit>
+      <Unit>
+        <Filename Value="mcp-server.json"/>
+        <EditorIndex Value="-1"/>
+        <CursorPos X="32" Y="14"/>
+        <UsageCount Value="98"/>
+        <DefaultSyntaxHighlighter Value="None"/>
+      </Unit>
+      <Unit>
+        <Filename Value="workspace\hallo-welt-lazarus\hallo_welt.lpr"/>
+        <HasResources Value="True"/>
+        <IsVisibleTab Value="True"/>
+        <EditorIndex Value="-1"/>
+        <CursorPos X="24" Y="14"/>
+        <UsageCount Value="10"/>
+      </Unit>
+      <Unit>
+        <Filename Value="workspace\hallo-welt-lazarus\hallo_welt.pas"/>
+        <ComponentName Value="Form1"/>
+        <HasResources Value="True"/>
+        <ResourceBaseClass Value="Form"/>
+        <EditorIndex Value="-1"/>
+        <CursorPos X="3" Y="34"/>
+        <UsageCount Value="10"/>
+      </Unit>
+    </Units>
+    <JumpHistory HistoryIndex="-1"/>
+    <RunParams>
+      <FormatVersion Value="2"/>
+      <Modes ActiveMode=""/>
+    </RunParams>
+  </ProjectSession>
+</CONFIG>

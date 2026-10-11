@@ -6,3 +6,6 @@ taskkill /F /IM php-cgi.exe
 
 timeout /t 1 /nobreak >nul
 taskkill /F /IM nginx.exe
+
+taskkill /F /IM ragd.exe
+taskkill /F /IM mcp_server.exe
