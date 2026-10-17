@@ -1,0 +1,43 @@
+# LocalLightChat / RAGD configuration (macOS)
+# Stored outside the signed .app, editable via Dock > Open RAG Config.
+# Changes require Dock > Restart Services. Keep the database path writable.
+
+# HTTP listener (loopback only by default)
+listen=127.0.0.1
+port=8787
+
+# SQLite database + FTS index + embeddings; created at this absolute user path.
+db=__LLC_RAG_DB_PATH__
+
+# Embedding endpoint (llama.cpp / OpenAI-compatible)
+# Change these to the actual embedding server URL and model name.
+llama_url=http://127.0.0.1:8080
+embedding_model=embed
+# llama_api_key=your-secret-key
+# If llama_api_key is absent, RAGD_LLAMA_API_KEY may be used.
+
+# Chunking (initial values follow the original ragd.conf tuning)
+chunk_chars=2400
+chunk_max_chars=3200
+chunk_overlap=300
+embedding_batch=32
+
+# Retrieval output limits
+default_top_k=8
+max_top_k=64
+
+# Internal dense/BM25 hybrid candidate and RRF fusion settings
+hybrid_dense_k=96
+hybrid_bm25_k=32
+hybrid_rrf_k=60
+
+# Optional precise-mode reranker (disabled until configured)
+reranker_enabled=false
+reranker_url=http://127.0.0.1:8080
+reranker_model=reranker
+# reranker_api_key=your-secret-key
+# Set to 0 for unlimited bytes; this is a byte limit, not tokens.
+reranker_max_bytes=0
+
+# Max incoming HTTP request body (128 MiB)
+max_request_bytes=134217728

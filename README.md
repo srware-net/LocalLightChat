@@ -68,8 +68,6 @@ The repository contains packaging for:
 - Linux ARM64
 - macOS
 
-Linux packages also provide `start_with_Agent_RAG.sh` to start LocalLightChat together with the packaged MCP/Agent and RAG services.
-
 ## Docker
 
 Prebuilt image:
