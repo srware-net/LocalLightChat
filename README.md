@@ -9,52 +9,6 @@ Use local models, cloud APIs or both. Keep huge chats manageable, search your hi
 
 Website: https://www.locallightai.com/llc/
 
-## What it does
-
-### Chat that can get big
-
-- Folder-based chat organization and management
-- Full-text search across your chat history
-- **Compress & Clone** for large conversations while preserving decision-critical context
-- Documents and editable artifacts with version history
-- Attachments including PDF, images, CSV, YAML, XML, logs and more
-- URL sources and text notes
-- Markdown, Mermaid, Math/TeX and syntax-highlighted code
-- Templates, automatic chat naming, cloning, import and export
-
-### Give the model tools
-
-- MCP server management with per-chat activation and support for remote MCP servers
-- Native MCP agent stack with workspace-scoped filesystem tools
-- Process and shell execution
-- Persistent interactive terminal sessions
-- Persistent code workspaces
-- Optional Windows desktop tools for window management, screen capture and keyboard input
-- Configurable agentic tool-call rounds and context compaction
-- Large MCP results can be externalized as artifacts and selectively inspected later with artifact info, search and read tools instead of repeatedly filling the model context
-
-### RAG without the heavyweight stack
-
-- Dedicated `ragd` service included in the project
-- Reusable file library with RAG state
-- Dense, hybrid and precise retrieval modes
-- Hybrid retrieval combines vector search with BM25
-- Configurable chunking, retrieval depth and optional reranking
-- OpenAI-compatible embedding endpoint support
-- RAG can be enabled globally or per chat
-
-### Search, images, voice and model control
-
-- Built-in web search and fetch tools with configurable search providers
-- Image generation through OpenAI-compatible APIs, OpenRouter, stable-diffusion.cpp or ComfyUI bindings
-- Image editing through supported ComfyUI workflows
-- Voice transcription and text-to-speech
-- Local and cloud model connections through OpenAI-compatible APIs
-- Multiple connection profiles with custom headers and model prefixes
-- Advanced generation controls including temperature, sampling, DRY and Mirostat
-- Configurable model pricing and usage information
-- Role-based users: superadmin, admin and user
-
 ## Download
 
 Ready-to-use portable packages are available from GitHub Releases:
@@ -67,6 +21,35 @@ The repository contains packaging for:
 - Linux x64
 - Linux ARM64
 - macOS
+
+## What it does
+
+### Chat without the limits
+
+- Full-text search across your chat history
+- **Compress & Clone** large conversations while preserving decision-critical context
+- Documents and editable artifacts with version history
+- File attachments, URL sources and chat import/export
+
+### Agents with real tools
+
+- Local and remote MCP servers with per-chat activation
+- Native MCP agent stack with filesystem, shell and persistent terminal sessions
+- Persistent code workspaces and optional Windows desktop automation
+- Large tool results stored as searchable artifacts instead of flooding the model context
+
+### RAG built in
+
+- Reusable file library with integrated RAG
+- Dense, hybrid (vector + BM25) and precise retrieval
+- Configurable retrieval and optional reranking
+
+### Models and multimodal
+
+- Local and cloud models through OpenAI-compatible APIs
+- Built-in web search and fetch tools
+- Image generation and editing via multiple backends
+- Voice transcription and text-to-speech
 
 ## Docker
 
